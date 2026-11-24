@@ -1,0 +1,17 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none" role="img" aria-label="ArtPlayerPluginLiveActionSR">
+  <!-- A strip of film: the frame, its perforations, and a four-point spark in the frame for the
+       detail the plugin brings back. Same dark tile as the sibling plugins (64 grid, rx 14, flat).
+       Amber film, white spark: two colours on the tile, readable at 16px. -->
+  <rect width="64" height="64" rx="14" fill="#0B1220"/>
+  <rect x="10" y="12" width="44" height="40" rx="4" fill="#F5B544"/>
+  <rect x="17" y="18" width="30" height="28" rx="2" fill="#0B1220"/>
+  <rect x="11.5" y="16" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="11.5" y="25" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="11.5" y="34" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="11.5" y="43" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="49.5" y="16" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="49.5" y="25" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="49.5" y="34" width="3" height="4" rx="1" fill="#0B1220"/>
+  <rect x="49.5" y="43" width="3" height="4" rx="1" fill="#0B1220"/>
+  <path d="M32 22 C33 29 34 31 40 32 C34 33 33 35 32 42 C31 35 30 33 24 32 C30 31 31 29 32 22 Z" fill="#FFFFFF"/>
+</svg>
