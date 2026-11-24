@@ -4,7 +4,7 @@ import { benchmarkCacheKey, readCachedMode, safeLocalStorage, writeCachedMode } 
 import { FrameRateEstimator, frameBudgetFor, slowFrameFor } from './framerate.js';
 import { acquireGpu, measurePreset, Renderer, type GpuContext } from './gpu.js';
 import { computeLayout, targetChanged, type Rect, type Size } from './layout.js';
-import { loadModel, type ModelWeights } from './model.js';
+import { isGraphModel, loadModel, type ModelWeights } from './model.js';
 import {
   effectivePreset,
   isMode,
@@ -31,15 +31,24 @@ export type { ActiveMode, Mode, ModelPreset, Preset } from './modes.js';
 export type {
   Conv3x3Layer,
   DepthToSpaceLayer,
+  LinearModel,
   LumaCoefficients,
   ModelLayer,
   ModelSource,
   ModelWeights,
 } from './model.js';
+export type {
+  Activation,
+  GraphInput,
+  GraphModel,
+  GraphNode,
+  GraphOutput,
+  Padding,
+} from './graph.js';
 export type { Tuning } from './plan.js';
 export { DEFAULT_LABELS } from './options.js';
 export { MODES } from './modes.js';
-export { ModelError, parseModel } from './model.js';
+export { isGraphModel, ModelError, parseModel } from './model.js';
 
 export const PLUGIN_NAME = 'artplayerPluginLiveActionSR';
 const SETTING_NAME = 'artplayer-plugin-liveaction-sr';
@@ -260,7 +269,10 @@ export default function artplayerPluginLiveActionSR(option: LiveActionSrOptions 
           source === undefined ? Promise.reject(new Error('no weights')) : loadModel(source)
         )
           .then((model) => {
-            log('weights', preset, `${model.arch}, x${model.scale}, ${model.layers.length} layers`);
+            const size = isGraphModel(model)
+              ? `${model.nodes.length} nodes`
+              : `${model.layers.length} layers`;
+            log('weights', preset, `${model.arch}, x${model.scale}, ${size}`);
             return model;
           })
           .catch((error: unknown) => {

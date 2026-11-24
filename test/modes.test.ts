@@ -6,6 +6,7 @@ import {
   median,
   menuModes,
   pickAutoMode,
+  PRESETS,
   stepDown,
   type BenchmarkSample,
   type Preset,
@@ -71,8 +72,26 @@ describe('pickAutoMode', () => {
   });
 });
 
+describe('ultra in auto', () => {
+  it('is measured last and picked only when it fits', () => {
+    const budget = 12;
+    const fits = [
+      { preset: 'performance' as const, ms: 1 },
+      { preset: 'quality' as const, ms: 4 },
+      { preset: 'ultra' as const, ms: 11 },
+    ];
+    expect(pickAutoMode(fits, budget)).toBe('ultra');
+    expect(pickAutoMode([...fits.slice(0, 2), { preset: 'ultra', ms: 48 }], budget)).toBe(
+      'quality',
+    );
+    expect(PRESETS[PRESETS.length - 1]).toBe('ultra');
+    expect(isModelPreset('ultra')).toBe(true);
+  });
+});
+
 describe('stepDown', () => {
-  it('walks quality -> balanced -> performance -> off', () => {
+  it('walks ultra -> quality -> balanced -> performance -> off', () => {
+    expect(stepDown('ultra')).toBe('quality');
     expect(stepDown('quality')).toBe('balanced');
     expect(stepDown('balanced')).toBe('performance');
     expect(stepDown('performance')).toBe('off');
@@ -83,6 +102,7 @@ describe('stepDown', () => {
     const noBalanced = only('performance', 'quality');
     expect(stepDown('quality', noBalanced)).toBe('performance');
     expect(stepDown('quality', only('performance'))).toBe('performance');
+    expect(stepDown('ultra', only('performance', 'balanced', 'ultra'))).toBe('balanced');
   });
 
   it('treats performance as always available', () => {
@@ -110,6 +130,14 @@ describe('menuModes', () => {
       'balanced',
       'quality',
     ]);
+    expect(menuModes(only('performance', 'balanced', 'quality', 'ultra'))).toEqual([
+      'auto',
+      'off',
+      'performance',
+      'balanced',
+      'quality',
+      'ultra',
+    ]);
   });
 });
 
@@ -122,6 +150,7 @@ describe('effectivePreset', () => {
     expect(effectivePreset('quality', only('performance', 'balanced'))).toBe('balanced');
     expect(effectivePreset('quality', only('performance'))).toBe('performance');
     expect(effectivePreset('balanced', only('performance', 'quality'))).toBe('performance');
+    expect(effectivePreset('ultra', only('performance', 'quality'))).toBe('quality');
   });
 
   it('never falls back to nothing', () => {
@@ -153,11 +182,11 @@ describe('median', () => {
 });
 
 describe('isMode', () => {
-  it('accepts the five modes and nothing else', () => {
-    for (const mode of ['auto', 'off', 'performance', 'balanced', 'quality']) {
+  it('accepts the six modes and nothing else', () => {
+    for (const mode of ['auto', 'off', 'performance', 'balanced', 'quality', 'ultra']) {
       expect(isMode(mode)).toBe(true);
     }
-    expect(isMode('ultra')).toBe(false);
+    expect(isMode('insane')).toBe(false);
     expect(isMode(undefined)).toBe(false);
     expect(isMode(3)).toBe(false);
   });

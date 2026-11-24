@@ -116,6 +116,7 @@
           <option value="performance">performance</option>
           <option value="balanced">balanced</option>
           <option value="quality">quality</option>
+          <option value="ultra">ultra</option>
         </select>
         <button type="submit">Load</button>
         <button type="button" id="clear-cache">Clear benchmark cache</button>
@@ -142,9 +143,11 @@
       <p class="note">
         The video must be same-origin or served with CORS headers; WebGPU cannot read frames from a
         cross-origin video. Open the settings gear in the player to switch modes there too.
-        <code>?model=test</code> plugs random stand-in weights into balanced and quality (the
-        picture stays near the bilinear base; it is there to run and time the CNN path), and
-        <code>?model=&lt;url&gt;</code> loads a real weights file for both.
+        <code>?model=shipped</code> loads the weights in <code>models/</code> (balanced, quality and
+        ultra), <code>?model=test</code> plugs random stand-in weights into balanced and quality
+        (the picture stays near the bilinear base; it is there to run and time the CNN path),
+        <code>?model=&lt;url&gt;</code> loads a weights file for both, and
+        <code>?ultra=&lt;url&gt;</code> sets ultra on its own.
       </p>
     </main>
     <script type="module" src="./main.ts"></script>

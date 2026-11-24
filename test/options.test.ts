@@ -27,7 +27,7 @@ describe('resolveOptions', () => {
     expect(resolveOptions(null).mode).toBe('auto');
     expect(resolveOptions('quality' as never).mode).toBe('auto');
     const o = resolveOptions({
-      mode: 'ultra' as never,
+      mode: 'insane' as never,
       frameBudgetMs: -3,
       slowFrameMs: NaN,
       maxOutputPixels: 'big' as never,

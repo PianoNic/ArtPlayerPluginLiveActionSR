@@ -1,7 +1,7 @@
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
 import artplayerPluginLiveActionSR, { type LiveActionSrPlugin, type Mode } from '../src/index';
-import { testModel } from './test-model';
+import { demoModels } from './models';
 
 // Tears of Steel (Blender Foundation, CC BY 3.0): live action, served as HLS with CORS enabled.
 const DEFAULT_URL =
@@ -14,15 +14,8 @@ const params = new URLSearchParams(location.search);
 urlInput.value = params.get('url') ?? DEFAULT_URL;
 modeSelect.value = params.get('mode') ?? 'auto';
 
-// `?model=test` plugs random stand-in weights into balanced and quality, to exercise the CNN path.
-// `?model=<url>` loads real weights for both.
-const modelParam = params.get('model');
-const models =
-  modelParam === 'test'
-    ? { balanced: testModel(8, 2), quality: testModel(16, 4) }
-    : modelParam
-      ? { balanced: modelParam, quality: modelParam }
-      : undefined;
+// `?model=shipped|test|<url>` and `?ultra=<url>|shipped`: see models.ts.
+const models = demoModels(params);
 
 let art: Artplayer | null = null;
 

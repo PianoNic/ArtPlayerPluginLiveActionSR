@@ -1,7 +1,7 @@
 import Artplayer from 'artplayer';
 import Hls from 'hls.js';
 import artplayerPluginLiveActionSR, { type LiveActionSrPlugin, type Mode } from '../src/index';
-import { testModel } from './test-model';
+import { demoModels } from './models';
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const stage = $('stage');
@@ -13,14 +13,8 @@ let art: Artplayer | null = null;
 let plugin: LiveActionSrPlugin | null = null;
 let mode: Mode = 'performance';
 const params = new URLSearchParams(location.search);
-// `?model=test` plugs random stand-in weights into balanced and quality; `?model=<url>` real ones.
-const modelParam = params.get('model');
-const models =
-  modelParam === 'test'
-    ? { balanced: testModel(8, 2), quality: testModel(16, 4) }
-    : modelParam
-      ? { balanced: modelParam, quality: modelParam }
-      : undefined;
+// `?model=shipped|test|<url>` and `?ultra=<url>|shipped`: see models.ts.
+const models = demoModels(params);
 let splitOn = true;
 let objectUrl: string | null = null;
 
@@ -132,7 +126,7 @@ document.addEventListener('keydown', (event) => {
     splitOn = !splitOn;
     applySplit();
   }
-  const index = ['1', '2', '3', '4', '5'].indexOf(event.key);
+  const index = ['1', '2', '3', '4', '5', '6'].indexOf(event.key);
   if (index >= 0) setMode(modeButtons[index].dataset.mode as Mode);
 });
 

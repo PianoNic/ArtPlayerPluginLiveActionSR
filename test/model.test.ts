@@ -9,6 +9,7 @@ import {
   ModelError,
   packBias,
   packConvWeights,
+  parseLinearModel,
   parseModel,
   runModelReference,
   toHalfArray,
@@ -56,7 +57,7 @@ const valid = () =>
 
 describe('parseModel', () => {
   it('accepts the documented format and defaults luma to bt709', () => {
-    const parsed = parseModel(valid());
+    const parsed = parseLinearModel(valid());
     expect(parsed.scale).toBe(2);
     expect(parsed.luma).toBe('bt709');
     expect(parsed.layers.map((layer) => layer.type)).toEqual([
@@ -70,7 +71,7 @@ describe('parseModel', () => {
   it('treats a missing relu as false', () => {
     const first = conv(1, 4, false) as Partial<Conv3x3Layer>;
     delete first.relu;
-    const parsed = parseModel(model(first, { type: 'depth_to_space', scale: 2 }));
+    const parsed = parseLinearModel(model(first, { type: 'depth_to_space', scale: 2 }));
     expect((parsed.layers[0] as Conv3x3Layer).relu).toBe(false);
   });
 
@@ -244,7 +245,7 @@ describe('CPU reference', () => {
   });
 
   it('runs a whole network to a residual at twice the size', () => {
-    const parsed = parseModel(valid());
+    const parsed = parseLinearModel(valid());
     const residual = runModelReference(parsed, planes(1, 6, 4)[0], 6, 4);
     expect(residual).toHaveLength(12 * 8);
     expect(residual.every(Number.isFinite)).toBe(true);
@@ -256,7 +257,9 @@ describe('CPU reference', () => {
       weights: Array(outputs * inputs * 9).fill(0),
       bias: Array(outputs).fill(0),
     });
-    const parsed = parseModel(model(zero(1, 4), zero(4, 4), { type: 'depth_to_space', scale: 2 }));
+    const parsed = parseLinearModel(
+      model(zero(1, 4), zero(4, 4), { type: 'depth_to_space', scale: 2 }),
+    );
     expect(runModelReference(parsed, planes(1, 3, 3)[0], 3, 3).every((v) => v === 0)).toBe(true);
   });
 });

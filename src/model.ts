@@ -1,6 +1,13 @@
 /**
- * The luma CNN behind `balanced` and `quality`: the weights format, its validation, how the
- * weights are packed for the WGSL convolution, and a CPU reference of the whole network.
+ * The networks behind the CNN presets. Two weight formats are accepted:
+ *
+ * - the **linear** format below, a plain stack of 3x3 convolutions on luma (`balanced`,
+ *   `quality`);
+ * - the **graph** format of `graph.ts`, a small DAG of named tensors for networks with skips and
+ *   attention (`ultra`, EfRLFN). A file with a `nodes` array is a graph.
+ *
+ * This module holds the linear format, its validation, how its weights are packed for the WGSL
+ * convolution and its CPU reference, plus `parseModel` / `loadModel` for both.
  *
  * The network sees one channel, the luma (Y') of the source frame, and predicts a residual at
  * `scale` times the resolution. That residual is added to a bilinear upscale of the frame
@@ -21,6 +28,28 @@
  * are in 0..1 (8-bit levels divided by 255).
  */
 
+import { isGraphModel, parseGraphModel, type GraphModel } from './graph.js';
+import {
+  groups,
+  isChannelCount,
+  isFiniteArray,
+  MAX_CHANNELS,
+  ModelError,
+  type LumaCoefficients,
+} from './tensor.js';
+
+export {
+  fromHalfBits,
+  groups,
+  LUMA_WEIGHTS,
+  MAX_CHANNELS,
+  ModelError,
+  toHalfArray,
+  toHalfBits,
+  type LumaCoefficients,
+} from './tensor.js';
+export { isGraphModel };
+
 export interface Conv3x3Layer {
   type: 'conv3x3';
   in: number;
@@ -37,10 +66,8 @@ export interface DepthToSpaceLayer {
 
 export type ModelLayer = Conv3x3Layer | DepthToSpaceLayer;
 
-/** Luma coefficients the network was trained with. */
-export type LumaCoefficients = 'bt709' | 'bt601';
-
-export interface ModelWeights {
+/** A network in the linear format. */
+export interface LinearModel {
   arch: string;
   scale: number;
   /** Width of the hidden layers; informational. */
@@ -50,39 +77,22 @@ export interface ModelWeights {
   layers: ModelLayer[];
 }
 
-/** Hard limits, so a broken file cannot generate a shader that takes minutes to compile. */
-export const MAX_CHANNELS = 64;
+/** Hard limit, so a broken file cannot generate a shader that takes minutes to compile. */
 export const MAX_LAYERS = 32;
 export const SUPPORTED_SCALES: readonly number[] = [2, 3, 4];
 
-export const LUMA_WEIGHTS: Record<LumaCoefficients, readonly [number, number, number]> = {
-  bt709: [0.2126, 0.7152, 0.0722],
-  bt601: [0.299, 0.587, 0.114],
-};
-
-export class ModelError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ModelError';
-  }
-}
-
-function isFiniteArray(value: unknown, length: number): value is number[] {
-  return (
-    Array.isArray(value) &&
-    value.length === length &&
-    value.every((n) => typeof n === 'number' && Number.isFinite(n))
-  );
-}
-
-function isChannelCount(value: unknown): value is number {
-  return (
-    typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_CHANNELS
-  );
-}
+/** Weights in either format, validated. Tell them apart with `isGraphModel`. */
+export type ModelWeights = LinearModel | GraphModel;
 
 /** Checks a parsed weights file and returns it typed. Throws `ModelError` naming the first problem. */
 export function parseModel(json: unknown): ModelWeights {
+  if (!json || typeof json !== 'object') throw new ModelError('weights must be a JSON object');
+  if (Array.isArray((json as { nodes?: unknown }).nodes)) return parseGraphModel(json);
+  return parseLinearModel(json);
+}
+
+/** `parseModel` for the linear format only. */
+export function parseLinearModel(json: unknown): LinearModel {
   if (!json || typeof json !== 'object') throw new ModelError('weights must be a JSON object');
   const o = json as Record<string, unknown>;
   const scale = o.scale;
@@ -154,13 +164,8 @@ export function parseModel(json: unknown): ModelWeights {
   };
 }
 
-export function convLayers(model: ModelWeights): Conv3x3Layer[] {
+export function convLayers(model: LinearModel): Conv3x3Layer[] {
   return model.layers.filter((layer): layer is Conv3x3Layer => layer.type === 'conv3x3');
-}
-
-/** Channels travel in groups of four: one RGBA texel of a texture array layer per group. */
-export function groups(channels: number): number {
-  return Math.ceil(channels / 4);
 }
 
 /**
@@ -189,52 +194,6 @@ export function packBias(layer: Conv3x3Layer): Float32Array<ArrayBuffer> {
   const packed = new Float32Array(groups(layer.out) * 4);
   packed.set(layer.bias);
   return packed;
-}
-
-const scratch = new DataView(new ArrayBuffer(4));
-
-/** IEEE half-precision bits of a number, rounded to nearest even; overflow becomes infinity. */
-export function toHalfBits(value: number): number {
-  scratch.setFloat32(0, value);
-  const x = scratch.getUint32(0);
-  const sign = (x >>> 16) & 0x8000;
-  const exponent = (x >>> 23) & 0xff;
-  let mantissa = x & 0x7fffff;
-  if (exponent === 0xff) return sign | 0x7c00 | (mantissa ? 0x200 : 0);
-  const e = exponent - 127 + 15;
-  if (e >= 0x1f) return sign | 0x7c00;
-  if (e <= 0) {
-    if (e < -10) return sign;
-    mantissa |= 0x800000;
-    const shift = 14 - e;
-    let half = mantissa >>> shift;
-    const rest = mantissa & ((1 << shift) - 1);
-    const halfway = 1 << (shift - 1);
-    if (rest > halfway || (rest === halfway && half & 1)) half++;
-    return sign | half;
-  }
-  let half = (e << 10) | (mantissa >>> 13);
-  const rest = mantissa & 0x1fff;
-  // A carry out of the mantissa rounds into the exponent, up to infinity, as it should.
-  if (rest > 0x1000 || (rest === 0x1000 && half & 1)) half++;
-  return sign | half;
-}
-
-/** The value a half-precision bit pattern stands for. */
-export function fromHalfBits(bits: number): number {
-  const sign = bits & 0x8000 ? -1 : 1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  if (exponent === 0) return sign * mantissa * 2 ** -24;
-  if (exponent === 0x1f) return mantissa ? NaN : sign * Infinity;
-  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
-}
-
-/** Packed weights as half floats, for the `shader-f16` path. */
-export function toHalfArray(values: Float32Array): Uint16Array<ArrayBuffer> {
-  const out = new Uint16Array(values.length);
-  for (let i = 0; i < values.length; i++) out[i] = toHalfBits(values[i]);
-  return out;
 }
 
 // ---- CPU reference ------------------------------------------------------------------------------
@@ -332,7 +291,7 @@ export function depthToSpaceReference(
 
 /** The luma residual the network predicts for a luma plane: `width*scale x height*scale` values. */
 export function runModelReference(
-  model: ModelWeights,
+  model: LinearModel,
   luma: Float32Array,
   width: number,
   height: number,
