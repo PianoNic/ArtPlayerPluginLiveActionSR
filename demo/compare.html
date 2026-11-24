@@ -193,6 +193,7 @@
           <button type="button" data-mode="performance">Performance</button>
           <button type="button" data-mode="balanced">Balanced</button>
           <button type="button" data-mode="quality">Quality</button>
+          <button type="button" data-mode="ultra">Ultra</button>
           <button type="button" data-mode="auto">Auto</button>
         </div>
         <div class="split">
@@ -223,8 +224,9 @@
         sky, skin or fine texture and drag the slider: left of the line is the plain video, right of
         it the enhanced output. EASU only upscales when the player is larger than the video;
         otherwise you see the 1x cleanup (deband, sharpen, grain) alone. Fullscreen a 720p or 1080p
-        source for the strongest effect. Balanced and quality only appear once weights are
-        configured. Keys: <kbd>S</kbd> split on/off, <kbd>1</kbd>–<kbd>5</kbd> modes.
+        source for the strongest effect. Balanced, quality and ultra only appear once weights are
+        configured (<code>?model=shipped</code> loads the ones in <code>models/</code>). Keys:
+        <kbd>S</kbd> split on/off, <kbd>1</kbd>–<kbd>6</kbd> modes.
       </p>
     </main>
     <script type="module" src="./compare.ts"></script>

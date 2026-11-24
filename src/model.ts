@@ -1,6 +1,14 @@
 /**
- * The luma CNN behind `balanced` and `quality`: the weights format, its validation, how the
- * weights are packed for the WGSL convolution, and a CPU reference of the whole network.
+ * The networks behind the CNN presets. Two weight formats are accepted:
+ *
+ * - the **linear** format below, a plain stack of 3x3 convolutions on luma (`balanced`,
+ *   `quality`);
+ * - the **graph** format of `graph.ts`, a small DAG of named tensors for networks with skips and
+ *   attention (`ultra`, EfRLFN). A file with a `nodes` array is a graph.
+ *
+ * This module holds the linear format, its validation, its CPU reference and its conversion to a
+ * graph (`linearToGraph`: the GPU runs both formats through the graph executor), plus
+ * `parseModel` / `loadModel` for both.
  *
  * The network sees one channel, the luma (Y') of the source frame, and predicts a residual at
  * `scale` times the resolution. That residual is added to a bilinear upscale of the frame
@@ -21,6 +29,27 @@
  * are in 0..1 (8-bit levels divided by 255).
  */
 
+import { GRAPH_INPUT, isGraphModel, parseGraphModel, type GraphModel } from './graph.js';
+import {
+  isChannelCount,
+  isFiniteArray,
+  MAX_CHANNELS,
+  ModelError,
+  type LumaCoefficients,
+} from './tensor.js';
+
+export {
+  fromHalfBits,
+  groups,
+  LUMA_WEIGHTS,
+  MAX_CHANNELS,
+  ModelError,
+  toHalfArray,
+  toHalfBits,
+  type LumaCoefficients,
+} from './tensor.js';
+export { isGraphModel };
+
 export interface Conv3x3Layer {
   type: 'conv3x3';
   in: number;
@@ -37,10 +66,8 @@ export interface DepthToSpaceLayer {
 
 export type ModelLayer = Conv3x3Layer | DepthToSpaceLayer;
 
-/** Luma coefficients the network was trained with. */
-export type LumaCoefficients = 'bt709' | 'bt601';
-
-export interface ModelWeights {
+/** A network in the linear format. */
+export interface LinearModel {
   arch: string;
   scale: number;
   /** Width of the hidden layers; informational. */
@@ -50,39 +77,22 @@ export interface ModelWeights {
   layers: ModelLayer[];
 }
 
-/** Hard limits, so a broken file cannot generate a shader that takes minutes to compile. */
-export const MAX_CHANNELS = 64;
+/** Hard limit, so a broken file cannot generate a shader that takes minutes to compile. */
 export const MAX_LAYERS = 32;
 export const SUPPORTED_SCALES: readonly number[] = [2, 3, 4];
 
-export const LUMA_WEIGHTS: Record<LumaCoefficients, readonly [number, number, number]> = {
-  bt709: [0.2126, 0.7152, 0.0722],
-  bt601: [0.299, 0.587, 0.114],
-};
-
-export class ModelError extends Error {
-  constructor(message: string) {
-    super(message);
-    this.name = 'ModelError';
-  }
-}
-
-function isFiniteArray(value: unknown, length: number): value is number[] {
-  return (
-    Array.isArray(value) &&
-    value.length === length &&
-    value.every((n) => typeof n === 'number' && Number.isFinite(n))
-  );
-}
-
-function isChannelCount(value: unknown): value is number {
-  return (
-    typeof value === 'number' && Number.isInteger(value) && value >= 1 && value <= MAX_CHANNELS
-  );
-}
+/** Weights in either format, validated. Tell them apart with `isGraphModel`. */
+export type ModelWeights = LinearModel | GraphModel;
 
 /** Checks a parsed weights file and returns it typed. Throws `ModelError` naming the first problem. */
 export function parseModel(json: unknown): ModelWeights {
+  if (!json || typeof json !== 'object') throw new ModelError('weights must be a JSON object');
+  if (Array.isArray((json as { nodes?: unknown }).nodes)) return parseGraphModel(json);
+  return parseLinearModel(json);
+}
+
+/** `parseModel` for the linear format only. */
+export function parseLinearModel(json: unknown): LinearModel {
   if (!json || typeof json !== 'object') throw new ModelError('weights must be a JSON object');
   const o = json as Record<string, unknown>;
   const scale = o.scale;
@@ -154,87 +164,46 @@ export function parseModel(json: unknown): ModelWeights {
   };
 }
 
-export function convLayers(model: ModelWeights): Conv3x3Layer[] {
+export function convLayers(model: LinearModel): Conv3x3Layer[] {
   return model.layers.filter((layer): layer is Conv3x3Layer => layer.type === 'conv3x3');
 }
 
-/** Channels travel in groups of four: one RGBA texel of a texture array layer per group. */
-export function groups(channels: number): number {
-  return Math.ceil(channels / 4);
-}
-
 /**
- * Packs a layer's weights for the WGSL convolution: one `mat4x4` per output group, input group and
- * tap, laid out `[og][ig][tap]`. Column `k` of a matrix holds the weights from input channel
- * `ig*4 + k` to output channels `og*4 .. og*4 + 3`, so `matrix * inputTexel` is that tap's
- * contribution to four outputs. Taps run row by row, `tap = ky*3 + kx`. Missing channels are 0.
+ * The same network in the graph format: luma in, one `conv` node per layer (3x3, replicate
+ * padding, `relu` or none), the depth-to-space, and a `luma_residual` output added to the bilinear
+ * upscale. The GPU runs linear models this way, through the graph's register-blocked convolution.
  */
-export function packConvWeights(layer: Conv3x3Layer): Float32Array<ArrayBuffer> {
-  const ig = groups(layer.in);
-  const og = groups(layer.out);
-  const packed = new Float32Array(og * ig * 9 * 16);
-  for (let o = 0; o < layer.out; o++) {
-    for (let i = 0; i < layer.in; i++) {
-      for (let t = 0; t < 9; t++) {
-        const matrix = ((o >> 2) * ig + (i >> 2)) * 9 + t;
-        packed[matrix * 16 + (i & 3) * 4 + (o & 3)] = layer.weights[(o * layer.in + i) * 9 + t];
-      }
-    }
-  }
-  return packed;
-}
-
-/** The bias as one `vec4` per output group, zero-padded. */
-export function packBias(layer: Conv3x3Layer): Float32Array<ArrayBuffer> {
-  const packed = new Float32Array(groups(layer.out) * 4);
-  packed.set(layer.bias);
-  return packed;
-}
-
-const scratch = new DataView(new ArrayBuffer(4));
-
-/** IEEE half-precision bits of a number, rounded to nearest even; overflow becomes infinity. */
-export function toHalfBits(value: number): number {
-  scratch.setFloat32(0, value);
-  const x = scratch.getUint32(0);
-  const sign = (x >>> 16) & 0x8000;
-  const exponent = (x >>> 23) & 0xff;
-  let mantissa = x & 0x7fffff;
-  if (exponent === 0xff) return sign | 0x7c00 | (mantissa ? 0x200 : 0);
-  const e = exponent - 127 + 15;
-  if (e >= 0x1f) return sign | 0x7c00;
-  if (e <= 0) {
-    if (e < -10) return sign;
-    mantissa |= 0x800000;
-    const shift = 14 - e;
-    let half = mantissa >>> shift;
-    const rest = mantissa & ((1 << shift) - 1);
-    const halfway = 1 << (shift - 1);
-    if (rest > halfway || (rest === halfway && half & 1)) half++;
-    return sign | half;
-  }
-  let half = (e << 10) | (mantissa >>> 13);
-  const rest = mantissa & 0x1fff;
-  // A carry out of the mantissa rounds into the exponent, up to infinity, as it should.
-  if (rest > 0x1000 || (rest === 0x1000 && half & 1)) half++;
-  return sign | half;
-}
-
-/** The value a half-precision bit pattern stands for. */
-export function fromHalfBits(bits: number): number {
-  const sign = bits & 0x8000 ? -1 : 1;
-  const exponent = (bits >> 10) & 0x1f;
-  const mantissa = bits & 0x3ff;
-  if (exponent === 0) return sign * mantissa * 2 ** -24;
-  if (exponent === 0x1f) return mantissa ? NaN : sign * Infinity;
-  return sign * (1 + mantissa / 1024) * 2 ** (exponent - 15);
-}
-
-/** Packed weights as half floats, for the `shader-f16` path. */
-export function toHalfArray(values: Float32Array): Uint16Array<ArrayBuffer> {
-  const out = new Uint16Array(values.length);
-  for (let i = 0; i < values.length; i++) out[i] = toHalfBits(values[i]);
-  return out;
+export function linearToGraph(model: LinearModel): GraphModel {
+  const nodes: GraphModel['nodes'] = [];
+  let previous = GRAPH_INPUT;
+  convLayers(model).forEach((layer, index) => {
+    const name = `conv${index}`;
+    nodes.push({
+      name,
+      op: 'conv',
+      inputs: [previous],
+      in: layer.in,
+      out: layer.out,
+      kernel: 3,
+      dilation: 1,
+      padding: 'replicate',
+      activation: layer.relu ? 'relu' : 'none',
+      slope: 0.01,
+      weights: Float32Array.from(layer.weights),
+      bias: Float32Array.from(layer.bias),
+    });
+    previous = name;
+  });
+  nodes.push({ name: 'shuffle', op: 'depth_to_space', inputs: [previous], scale: model.scale });
+  return {
+    arch: model.arch,
+    scale: model.scale,
+    channels: model.channels,
+    input: 'luma',
+    output: 'luma_residual',
+    luma: model.luma,
+    nodes,
+  };
 }
 
 // ---- CPU reference ------------------------------------------------------------------------------
@@ -268,50 +237,6 @@ export function convReference(layer: Conv3x3Layer, input: Planes, width: number,
   return output;
 }
 
-/**
- * The same convolution computed the way the WGSL shader does it: from packed matrices and
- * channel groups. Used to prove the packing is right.
- */
-export function convPackedReference(
-  packed: Float32Array,
-  bias: Float32Array,
-  inputGroups: number,
-  outputGroups: number,
-  relu: boolean,
-  input: Planes,
-  width: number,
-  height: number,
-): Planes {
-  const texel = (channel: number, x: number, y: number) =>
-    channel < input.length ? input[channel][y * width + x] : 0;
-  const output: Planes = Array.from(
-    { length: outputGroups * 4 },
-    () => new Float32Array(width * height),
-  );
-  for (let og = 0; og < outputGroups; og++) {
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const acc = [bias[og * 4], bias[og * 4 + 1], bias[og * 4 + 2], bias[og * 4 + 3]];
-        for (let t = 0; t < 9; t++) {
-          const qx = Math.min(width - 1, Math.max(0, x + (t % 3) - 1));
-          const qy = Math.min(height - 1, Math.max(0, y + Math.floor(t / 3) - 1));
-          for (let ig = 0; ig < inputGroups; ig++) {
-            const m = ((og * inputGroups + ig) * 9 + t) * 16;
-            for (let k = 0; k < 4; k++) {
-              const a = texel(ig * 4 + k, qx, qy);
-              for (let j = 0; j < 4; j++) acc[j] += packed[m + k * 4 + j] * a;
-            }
-          }
-        }
-        for (let j = 0; j < 4; j++) {
-          output[og * 4 + j][y * width + x] = relu ? Math.max(0, acc[j]) : acc[j];
-        }
-      }
-    }
-  }
-  return output;
-}
-
 /** `nn.PixelShuffle(scale)` for a single output channel. */
 export function depthToSpaceReference(
   input: Planes,
@@ -332,7 +257,7 @@ export function depthToSpaceReference(
 
 /** The luma residual the network predicts for a luma plane: `width*scale x height*scale` values. */
 export function runModelReference(
-  model: ModelWeights,
+  model: LinearModel,
   luma: Float32Array,
   width: number,
   height: number,
@@ -340,6 +265,39 @@ export function runModelReference(
   let planes: Planes = [luma];
   for (const layer of convLayers(model)) planes = convReference(layer, planes, width, height);
   return depthToSpaceReference(planes, model.scale, width, height);
+}
+
+/**
+ * The bilinear base the residual is added to: `F.interpolate(mode='bilinear',
+ * align_corners=False)`, pixel centres at half-pixel offsets, clamped to the edge. One plane in,
+ * one plane `scale` times the size out.
+ */
+export function bilinearReference(
+  plane: Float32Array,
+  width: number,
+  height: number,
+  scale: number,
+): Float32Array {
+  const outWidth = width * scale;
+  const outHeight = height * scale;
+  const out = new Float32Array(outWidth * outHeight);
+  const at = (x: number, y: number) => plane[y * width + x];
+  for (let y = 0; y < outHeight; y++) {
+    const fy = Math.min(height - 1, Math.max(0, (y + 0.5) / scale - 0.5));
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const ty = fy - y0;
+    for (let x = 0; x < outWidth; x++) {
+      const fx = Math.min(width - 1, Math.max(0, (x + 0.5) / scale - 0.5));
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const tx = fx - x0;
+      const top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+      const bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+      out[y * outWidth + x] = top + (bottom - top) * ty;
+    }
+  }
+  return out;
 }
 
 // ---- loading ------------------------------------------------------------------------------------

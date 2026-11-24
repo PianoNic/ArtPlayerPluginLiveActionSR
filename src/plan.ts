@@ -21,7 +21,7 @@ export const EASU_MIN_RATIO = 1.05;
 export type Stage =
   /** f3kdb-style deband, at the source resolution. */
   | { kind: 'deband'; size: Size }
-  /** Luma CNN: a residual at `scale`x on top of a bilinear upscale. */
+  /** The CNN at `scale`x: a luma residual on a bilinear upscale, or (graph models) the RGB frame. */
   | { kind: 'model'; from: Size; size: Size; scale: number }
   /** FSR 1 EASU, edge-adaptive upscale. */
   | { kind: 'easu'; from: Size; size: Size }
@@ -52,8 +52,9 @@ function notSmaller(target: Size, base: Size): boolean {
  * The stages a preset runs for a video of `native` size shown at `target` device pixels:
  *
  *   performance  deband > EASU to target > RCAS               (> grain when presenting)
- *   balanced /   deband > luma CNN x2 > EASU to target if the CNN fell short > RCAS
- *   quality
+ *   balanced /   deband > CNN x2 > EASU to target if the CNN fell short > RCAS
+ *   quality /
+ *   ultra
  *
  * When the screen is not larger than the video, nothing is upscaled: the frame gets the 1x
  * cleanup (deband, RCAS, grain) and the present pass scales it. The CNN needs weights

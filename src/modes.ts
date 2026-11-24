@@ -1,5 +1,5 @@
 /** Everything the user can pick. `auto` resolves to one of the other four at runtime. */
-export type Mode = 'auto' | 'off' | 'performance' | 'balanced' | 'quality';
+export type Mode = 'auto' | 'off' | 'performance' | 'balanced' | 'quality' | 'ultra';
 
 /** What is actually rendering. `auto` never appears here. */
 export type ActiveMode = Exclude<Mode, 'auto'>;
@@ -10,13 +10,20 @@ export type Preset = Exclude<ActiveMode, 'off'>;
 /** A preset that needs trained network weights (see `models` in the options). */
 export type ModelPreset = Exclude<Preset, 'performance'>;
 
-export const MODES: readonly Mode[] = ['auto', 'off', 'performance', 'balanced', 'quality'];
+export const MODES: readonly Mode[] = [
+  'auto',
+  'off',
+  'performance',
+  'balanced',
+  'quality',
+  'ultra',
+];
 
 /** Weakest to strongest. */
-export const PRESETS: readonly Preset[] = ['performance', 'balanced', 'quality'];
+export const PRESETS: readonly Preset[] = ['performance', 'balanced', 'quality', 'ultra'];
 
 /** The presets that run a luma CNN and only exist when their weights were supplied. */
-export const MODEL_PRESETS: readonly ModelPreset[] = ['balanced', 'quality'];
+export const MODEL_PRESETS: readonly ModelPreset[] = ['balanced', 'quality', 'ultra'];
 
 export function isMode(value: unknown): value is Mode {
   return typeof value === 'string' && (MODES as readonly string[]).includes(value);

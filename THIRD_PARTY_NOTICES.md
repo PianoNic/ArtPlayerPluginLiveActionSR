@@ -51,9 +51,42 @@ NEGLIGENCE OR OTHER TORTIOUS ACTION, ARISING OUT OF OR IN CONNECTION WITH THE US
 THIS SOFTWARE.
 ```
 
+## EfRLFN (the `ultra` weights)
+
+`models/ultra.json` holds the 2x weights of
+[EfRLFN](https://github.com/EvgeneyBogatyrev/EfRLFN) (Bogatyrev et al., "Exploring Real-Time
+Super-Resolution: Benchmarking and Fine-Tuning for Streaming Content", ICLR 2026,
+arXiv:2602.11339), converted to this package's graph format by `tools/efrlfn/convert.py` (stored
+as float16; the network itself is unchanged). No EfRLFN source code is included: the plugin runs the
+network with its own WGSL shaders.
+
+```
+MIT License
+
+Copyright (c) 2026 MSU Graphics & Media Lab
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+
+The above copyright notice and this permission notice shall be included in all
+copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+SOFTWARE.
+```
+
 ## Not included
 
 The deband, film-grain, CNN and present shaders were written for this project. No code from
-libplacebo, mpv, f3kdb, RAVU, FSRCNNX, Anime4K or Magpie is included. Model weights are not
-bundled; the `balanced` and `quality` presets load them at run time from wherever the host page
-points `models` at, under that file's own licence.
+libplacebo, mpv, f3kdb, RAVU, FSRCNNX, Anime4K, Magpie or EfRLFN is included. The weights in
+`models/` are loaded at run time from wherever the host page points `models` at: `balanced.json`
+and `quality.json` are this project's (MIT), `ultra.json` is EfRLFN's (MIT, above).

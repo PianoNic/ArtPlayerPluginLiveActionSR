@@ -3,3 +3,4 @@ node_modules
 bun.lock
 # Owned by the training pipeline; formatted by its own tooling.
 training
+models/*.json

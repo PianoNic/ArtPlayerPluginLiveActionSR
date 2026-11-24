@@ -1,11 +1,11 @@
-import type { ModelWeights } from '../src/index';
+import type { LinearModel } from '../src/index';
 
 /**
  * A stand-in network for the demo, until trained weights exist: the real layer shapes with tiny
  * random weights, so the CNN presets run (and their cost can be measured) while the residual stays
  * close to zero and the picture is essentially the bilinear base. `?model=test` turns it on.
  */
-export function testModel(channels: number, hiddenLayers: number, seed = 1): ModelWeights {
+export function testModel(channels: number, hiddenLayers: number, seed = 1): LinearModel {
   let state = seed >>> 0 || 1;
   const random = () => {
     state ^= state << 13;
@@ -21,7 +21,7 @@ export function testModel(channels: number, hiddenLayers: number, seed = 1): Mod
     weights: Array.from({ length: outputs * inputs * 9 }, random),
     bias: Array.from({ length: outputs }, () => 0),
   });
-  const layers: ModelWeights['layers'] = [conv(1, channels, true)];
+  const layers: LinearModel['layers'] = [conv(1, channels, true)];
   for (let i = 0; i < hiddenLayers; i++) layers.push(conv(channels, channels, true));
   layers.push(conv(channels, 4, false), { type: 'depth_to_space', scale: 2 });
   return { arch: 'demo-random', scale: 2, channels, luma: 'bt709', layers };

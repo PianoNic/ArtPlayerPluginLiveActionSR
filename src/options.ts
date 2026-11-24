@@ -1,5 +1,5 @@
 import type { ModelSource } from './model.js';
-import { isMode, type ActiveMode, type Mode, type ModelPreset } from './modes.js';
+import { isMode, MODEL_PRESETS, type ActiveMode, type Mode, type ModelPreset } from './modes.js';
 import { DEFAULT_TUNING, type Tuning } from './plan.js';
 
 /** Every user-facing string. Pass your own to translate the setting entry. */
@@ -11,6 +11,7 @@ export interface LiveActionSrLabels {
   performance: string;
   balanced: string;
   quality: string;
+  ultra: string;
   /** Tooltip while auto is selected. `{mode}` is replaced with the label of the preset auto chose. */
   autoActive: string;
   /** Tooltip when the browser cannot run WebGPU. */
@@ -28,6 +29,7 @@ export const DEFAULT_LABELS: LiveActionSrLabels = {
   performance: 'Performance',
   balanced: 'Balanced',
   quality: 'Quality',
+  ultra: 'Ultra',
   autoActive: 'Auto ({mode})',
   unsupported: 'Not supported',
   struggling: 'Enhancing is heavy for this GPU; try a lighter preset',
@@ -162,7 +164,7 @@ export function resolveOptions(
   }
   const models: Partial<Record<ModelPreset, ModelSource>> = {};
   if (o.models && typeof o.models === 'object') {
-    for (const preset of ['balanced', 'quality'] as const) {
+    for (const preset of MODEL_PRESETS) {
       if (isModelSource(o.models[preset])) models[preset] = o.models[preset];
     }
   }

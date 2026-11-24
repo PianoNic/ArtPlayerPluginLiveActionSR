@@ -55,7 +55,7 @@ describe('benchmark cache', () => {
     const storage = memoryStorage();
     storage.data.set(key, 'not json');
     expect(readCachedMode(storage, key)).toBeNull();
-    storage.data.set(key, JSON.stringify({ v: 1, mode: 'ultra', at: Date.now() }));
+    storage.data.set(key, JSON.stringify({ v: 1, mode: 'insane', at: Date.now() }));
     expect(readCachedMode(storage, key)).toBeNull();
     storage.data.set(key, JSON.stringify({ v: 999, mode: 'quality', at: Date.now() }));
     expect(readCachedMode(storage, key)).toBeNull();

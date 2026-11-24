@@ -43,13 +43,15 @@ grain that compression ate:
 
 All of it is hand-written WGSL with no runtime dependencies. The `balanced` and `quality` presets
 add a small **luma CNN** that predicts a residual on top of a bilinear 2x upscale; its weights are
-trained separately and plugged in through `models`. The reasoning behind every choice - which
+trained separately and plugged in through `models`. `ultra` runs
+[EfRLFN](https://github.com/EvgeneyBogatyrev/EfRLFN) (ICLR 2026, MIT), a ten times larger RGB
+network fine-tuned on compressed streaming video, for strong GPUs and low-resolution sources. The reasoning behind every choice - which
 models and shaders were ruled out and why, licences, budgets - is in
 [docs/research.md](docs/research.md).
 
 ## Features
 
-- **Five modes** - `auto`, `off`, `performance`, `balanced`, `quality`, switchable from the settings gear or the API
+- **Six modes** - `auto`, `off`, `performance`, `balanced`, `quality`, `ultra`, switchable from the settings gear or the API
 - **No weights needed to start** - `performance` is pure shader work; the CNN presets only appear once their weights are configured
 - **Auto mode** - benchmarks each available preset on the actual video and screen size, picks the strongest one that fits the frame budget, and remembers the result per GPU
 - **Frame-rate aware** - measures the video's frame rate, so a 24 fps film gets more GPU time per frame than 60 fps TV
@@ -110,6 +112,7 @@ Without a bundler, load the browser build after ArtPlayer; it defines `artplayer
 | `performance` | deband > FSR1 EASU to the screen > RCAS > grain                  | WebGPU            |
 | `balanced`    | deband > small luma CNN x2 > EASU if still short > RCAS > grain  | `models.balanced` |
 | `quality`     | deband > larger luma CNN x2 > EASU if still short > RCAS > grain | `models.quality`  |
+| `ultra`       | deband > EfRLFN (RGB) x2 > EASU if still short > RCAS > grain    | `models.ultra`    |
 | `auto`        | The strongest available preset that fits the frame budget        | -                 |
 
 - EASU only runs when the screen is larger than the video; otherwise the frame gets the 1x
@@ -119,6 +122,7 @@ Without a bundler, load the browser build after ArtPlayer; it defines `artplayer
 - A CNN preset without weights is not in the menu and auto never picks it. `setMode('quality')`
   without weights selects the strongest preset that can run, `performance` at least. If configured
   weights fail to load or validate, that preset is withdrawn with a console warning.
+- Strength order, for auto and for stepping down: `ultra` > `quality` > `balanced` > `performance`.
 
 ### Tuning
 
@@ -131,6 +135,31 @@ Without a bundler, load the browser build after ArtPlayer; it defines `artplayer
 | `grain`     | `0.25`  | Peak grain about 2.5/255, strongest in the midtones, fading to black and white |
 
 The defaults are deliberately mild: halos on skin are the first thing a viewer notices.
+
+### Ultra (EfRLFN)
+
+`ultra` runs **EfRLFN** (Bogatyrev et al., _Exploring Real-Time Super-Resolution: Benchmarking and
+Fine-Tuning for Streaming Content_, ICLR 2026, [arXiv 2602.11339](https://arxiv.org/abs/2602.11339)),
+an RLFN-style network with efficient channel attention and tanh, fine-tuned on compressed streaming
+video. Unlike the luma presets it works on R, G and B and outputs the 2x frame itself, so it also
+repairs colour edges and chroma blocking. The weights ship as
+[`models/ultra.json`](models/ultra.json): the authors' 2x checkpoint converted unchanged
+([`tools/efrlfn`](tools/efrlfn/README.md)), stored as float16, **1.33 MB**, MIT
+(Copyright (c) 2026 MSU Graphics & Media Lab; notice and citation in
+[`models/NOTICE.md`](models/NOTICE.md)).
+
+**Cost.** 487,010 parameters and about 486,000 multiply-adds per source pixel: ten times `quality`,
+40 times `balanced`. Every frame also needs six global averages (the channel attention looks at
+the whole frame). See [Performance](#performance) for measured times: about 12 ms per frame for a
+640x360 source, 54 ms for 1280x720 and 123 ms for 1920x1080 on an RTX 5080.
+
+So even a high-end desktop GPU runs it in real time only for SD sources (a 24 fps film
+gives 41 ms per frame), and auto's default budget (12 ms at 24 fps) leaves it out on most setups:
+it is mainly a preset to **pick by hand** for low-resolution video on an RTX 4080/5080-class or
+faster GPU. A picked `ultra` that cannot keep up keeps rendering and shows the `struggling` notice;
+auto only chooses it when it measures within budget. Its activations take
+`ceil(52 / 4) * 8 = 104` bytes per source pixel and texture, and about four are alive at once:
+roughly 0.4 GB of video memory for a 720p source, 0.9 GB for 1080p.
 
 ### CNN weights
 
@@ -159,9 +188,9 @@ upscale of the frame. Weights come as JSON:
 - Values are in 0..1. `luma` is `bt709` (default) or `bt601`, whichever the network was trained on.
 - Scales 2, 3 and 4 are accepted; at most 64 channels per layer and 32 layers.
 
-The package ships trained weights in `models/` (`balanced.json`, `quality.json`; preview weights,
-see [`models/NOTICE.md`](models/NOTICE.md)). Serve them from your own origin and point the plugin
-at them, or import them:
+The package ships weights in `models/` (`balanced.json`, `quality.json`: preview weights trained
+here; `ultra.json`: EfRLFN; see [`models/NOTICE.md`](models/NOTICE.md)). Serve them from your own
+origin and point the plugin at them, or import them:
 
 ```ts
 artplayerPluginLiveActionSR({
@@ -169,13 +198,101 @@ artplayerPluginLiveActionSR({
     balanced: '/models/balanced.json', // a URL, fetched on first use
     quality: () =>
       import('artplayer-plugin-liveaction-sr/models/quality.json').then((m) => m.default), // or a loader, or the object itself
+    ultra: '/models/ultra.json',
   },
 });
 ```
 
-On the GPU, activations live in `rgba16float` texture arrays and each convolution is one compute
-dispatch; with `shader-f16` the arithmetic and weights are half precision. `parseModel` is exported
-to validate a file ahead of time.
+On the GPU, a linear model runs as the equivalent graph (`linearToGraph`: luma in, replicate-padded
+3x3 `conv` nodes, a `luma_residual` out), through the graph format's register-blocked convolution:
+three times faster than the per-pixel kernel it replaced. `parseModel` is exported to validate a
+file ahead of time.
+
+### Performance
+
+GPU time per frame from timestamp queries, median of 40 frames after 10 warm-up frames
+(`/demo/bench.html`). RTX 5080, Chrome 158, Windows 11, 2026-11-24, `shader-f16` (f16 weights and
+products, f32 accumulation). **CNN** is the model stage alone (luma, convolutions, depth-to-space
+plus residual, and EASU when the target is beyond 2x); **chain** is everything `FramePipeline`
+runs with the default tuning: deband > CNN (> EASU) > RCAS. Presenting to the canvas (scaling and
+grain) is not included. Timestamps are quantized to about 0.07 ms.
+
+| Source -> output       | `performance` chain | `balanced` CNN / chain | `quality` CNN / chain | `ultra` CNN / chain |
+| ---------------------- | ------------------- | ---------------------- | --------------------- | ------------------- |
+| 640x360 -> 1280x720    | 0.07 ms             | 0.39 / 0.39 ms         | 1.05 / 1.08 ms        | 12.0 / 12.3 ms      |
+| 1280x720 -> 2560x1440  | 0.13 ms             | 1.25 / 1.31 ms         | 4.06 / 4.13 ms        | 53.9 / 54.2 ms      |
+| 1920x1080 -> 3840x2160 | 0.39 ms             | 2.75 / 2.95 ms         | 9.70 / 9.90 ms        | 123.0 / 123.4 ms    |
+| 1280x720 -> 3840x2160  | 0.39 ms             | 1.44 / 1.61 ms         | 4.33 / 4.46 ms        | 54.8 / 55.1 ms      |
+
+- Before the luma networks ran through the graph convolution (one invocation per pixel and output
+  group), the CNN stage took 3.4 ms (`balanced`) and 12.5 ms (`quality`) at 1280x720, and 7.9 / 29.3
+  ms at 1920x1080: the graph kernel is 2.7-3.1x faster.
+- The f32 path (`shader-f16` off) is within 5% of these numbers, sometimes slightly faster: these
+  networks are bound by texture reads and register pressure, not by multiply throughput.
+- Accumulating in f16 as well would save another ~15% for `quality` at 1080p (with 4 output groups
+  per invocation), but the default keeps f32 accumulation for accuracy.
+
+### Graph weights format
+
+Networks with skip connections and attention, like EfRLFN, use the **graph** format: a file with
+a `nodes` array instead of `layers` (both formats load through `models` and `parseModel`; tell them
+apart with `isGraphModel`). Each node names its inputs; `input` is the frame, every other input is
+an earlier node:
+
+```json
+{
+  "arch": "efrlfn",
+  "scale": 2,
+  "input": "rgb",
+  "output": "rgb",
+  "nodes": [
+    {
+      "name": "conv_1",
+      "op": "conv",
+      "inputs": ["input"],
+      "in": 3,
+      "out": 52,
+      "kernel": 3,
+      "padding": "zero",
+      "activation": "none",
+      "weights": { "dtype": "float16", "base64": "..." },
+      "bias": { "dtype": "float16", "base64": "..." }
+    },
+    { "name": "b1.skip", "op": "add", "inputs": ["b1.c3_r", "conv_1"] },
+    { "name": "b1.pool", "op": "global_avg_pool", "inputs": ["b1.c5"] },
+    {
+      "name": "b1.attention",
+      "op": "channel_conv",
+      "inputs": ["b1.pool"],
+      "kernel": 3,
+      "activation": "sigmoid",
+      "weights": [0.1, 0.2, 0.1]
+    },
+    { "name": "b1", "op": "mul", "inputs": ["b1.c5", "b1.attention"] },
+    { "name": "pixel_shuffle", "op": "depth_to_space", "inputs": ["upsampler"], "scale": 2 }
+  ]
+}
+```
+
+| Op                | Does                                                                                                                                                                                |
+| ----------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `conv`            | Same-size cross-correlation, `kernel` 1/3/5/7, `dilation` (1), `padding` `zero` (default, PyTorch's) or `replicate`, then `activation`. `weights` `[out, in, k, k]`, `bias` `[out]` |
+| `add`, `mul`      | Elementwise; the second operand is a map of the same shape or a per-channel vector (broadcast). Optional `activation`                                                               |
+| `activation`      | `none`, `relu`, `lrelu` (`slope`, default 0.01), `sigmoid`, `tanh`                                                                                                                  |
+| `global_avg_pool` | Map -> vector: each channel's mean over the whole frame                                                                                                                             |
+| `channel_conv`    | Vector -> vector: a 1-D convolution across the channels (ECA's `Conv1d(1, 1, k)`), zero padded, optional single `bias`, then `activation`                                           |
+| `depth_to_space`  | `nn.PixelShuffle(scale)`; the last node, and only the last                                                                                                                          |
+
+- `input` is `rgb` (3 channels) or `luma` (1 channel, with `luma` coefficients); `output` is `rgb`
+  (the last node is the picture, clamped to 0..1) or `luma_residual` (added to a bilinear upscale,
+  as in the linear format).
+- A tensor is a list of numbers or `{ "dtype": "float16" | "float32", "base64": ... }`
+  (little-endian); both formats accept either.
+- Limits: 64 channels per tensor, 256 nodes, scales 2-4.
+- On the GPU, each node is one dispatch (a global pool is two: per-tile sums in `f32`, then their
+  total); maps are recycled as soon as their last reader ran. Convolutions compute 8 adjacent
+  pixels for 2 channel groups per invocation, so each weight read serves eight pixels.
+- `runGraphReference` is the CPU reference; the tests tie it to PyTorch.
 
 ### How auto decides
 
@@ -224,7 +341,7 @@ on iOS.
 | Option            | Type                                       | Default                                        | Description                                                                      |
 | ----------------- | ------------------------------------------ | ---------------------------------------------- | -------------------------------------------------------------------------------- |
 | `mode`            | `Mode`                                     | `'auto'`                                       | Starting mode                                                                    |
-| `models`          | `{ balanced?, quality? }`                  | none                                           | Weights per CNN preset: JSON object, URL, or a function resolving to one         |
+| `models`          | `{ balanced?, quality?, ultra? }`          | none                                           | Weights per CNN preset: JSON object, URL, or a function resolving to one         |
 | `tuning`          | `Partial<Tuning>`                          | `{ deband: 0.5, sharpness: 0.4, grain: 0.25 }` | Stage strengths, 0..1                                                            |
 | `labels`          | `Partial<LiveActionSrLabels>`              | English                                        | Any of the user-facing strings (see below)                                       |
 | `onModeChange`    | `(mode: Mode, active: ActiveMode) => void` | -                                              | Selection or active preset changed (menu, API, auto settling, downgrade)         |
@@ -269,6 +386,7 @@ artplayerPluginLiveActionSR({
     performance: 'Leistung',
     balanced: 'Ausgewogen',
     quality: 'Qualität',
+    ultra: 'Ultra',
     autoActive: 'Automatisch ({mode})', // {mode} becomes the label of the preset auto chose
     unsupported: 'Nicht unterstützt',
     struggling: 'Für diese GPU zu aufwendig; wähle eine leichtere Stufe',
@@ -308,16 +426,23 @@ Prerequisites: **Bun** (or Node 22+).
 ```bash
 bun install
 bun run dev        # demo page with ArtPlayer + hls.js -> http://localhost:5173/demo/
-bun run test       # vitest: modes, frame rate, pass planning, weights packing, monitor, options, cache, layout
+bun run test       # vitest: modes, frame rate, pass planning, weights packing, graph format + CPU reference, monitor, options, cache, layout
 bun run build      # dist/index.js (ESM) + .d.ts, dist/artplayer-plugin-liveaction-sr.js (browser global)
 ```
 
 The demo plays Tears of Steel (CC BY 3.0) and takes any mp4 or m3u8 URL (`?url=...&mode=...`).
-`?model=test` plugs random stand-in weights into `balanced` and `quality` to run and time the CNN
-path; `?model=<url>` loads a real weights file. `/demo/compare.html` is a side-by-side view: open a
+`?model=shipped` loads the weights in `models/` (balanced, quality and ultra); `?model=test` plugs
+random stand-in weights into `balanced` and `quality` to run and time the CNN path;
+`?model=<url>` loads a real weights file for both, and `?ultra=<url>` sets ultra on its own.
+`/demo/model-check.html` runs a CNN preset's real GPU pipeline on a still frame, compares the
+read-back with the CPU reference (and, with `?ref=`, with a PyTorch dump from `tools/efrlfn`),
+and times presets at 720p and 1080p; its parameters are listed in `demo/model-check.ts`
+(`?frame=synthetic` draws a test frame). `/demo/bench.html` produces the [Performance](#performance)
+table from GPU timestamp queries. `/demo/compare.html` is a side-by-side view: open a
 file from disk (or drop it on the player) and drag the split line.
 
-The CNN training pipeline lives in [`training/`](training/) and is not part of the npm package.
+The CNN training pipeline lives in [`training/`](training/), the EfRLFN converter in
+[`tools/efrlfn/`](tools/efrlfn/); neither is part of the npm package.
 
 ## Licence
 
@@ -325,12 +450,15 @@ The plugin's code is [MIT](LICENSE). The FSR 1 port (`src/shaders/fsr1.wgsl.ts`)
 AMD FidelityFX Super Resolution 1.0, MIT, Copyright (c) 2021 Advanced Micro Devices, Inc.; its
 notice is kept in the source and in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md), which ships
 with the package. The deband, grain and CNN shaders were written for this project; no LGPL/GPL
-code (libplacebo, mpv, RAVU, FSRCNNX, Magpie) is included. Model weights are not bundled and carry
-their own licence.
+code (libplacebo, mpv, RAVU, FSRCNNX, Magpie) is included. The weights in `models/` carry their own
+notice: `balanced` and `quality` are this project's (MIT); `ultra` is EfRLFN's (MIT, Copyright (c)
+2026 MSU Graphics & Media Lab), see [`models/NOTICE.md`](models/NOTICE.md).
 
 ## Credits
 
 [AMD FidelityFX FSR 1](https://github.com/GPUOpen-Effects/FidelityFX-FSR) ·
+[EfRLFN](https://github.com/EvgeneyBogatyrev/EfRLFN) by Bogatyrev, Abud, Molodetskikh, Alutis and
+Vatolin (MSU Graphics & Media Lab) ·
 [ArtPlayer](https://github.com/zhw2590582/ArtPlayer) by Harvey Zhao ·
 the f3kdb debanding idea · the [research summary](docs/research.md) behind the design. The settings
 icon is Lucide's `film` (ISC).
