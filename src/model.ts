@@ -6,8 +6,9 @@
  * - the **graph** format of `graph.ts`, a small DAG of named tensors for networks with skips and
  *   attention (`ultra`, EfRLFN). A file with a `nodes` array is a graph.
  *
- * This module holds the linear format, its validation, how its weights are packed for the WGSL
- * convolution and its CPU reference, plus `parseModel` / `loadModel` for both.
+ * This module holds the linear format, its validation, its CPU reference and its conversion to a
+ * graph (`linearToGraph`: the GPU runs both formats through the graph executor), plus
+ * `parseModel` / `loadModel` for both.
  *
  * The network sees one channel, the luma (Y') of the source frame, and predicts a residual at
  * `scale` times the resolution. That residual is added to a bilinear upscale of the frame
@@ -28,9 +29,8 @@
  * are in 0..1 (8-bit levels divided by 255).
  */
 
-import { isGraphModel, parseGraphModel, type GraphModel } from './graph.js';
+import { GRAPH_INPUT, isGraphModel, parseGraphModel, type GraphModel } from './graph.js';
 import {
-  groups,
   isChannelCount,
   isFiniteArray,
   MAX_CHANNELS,
@@ -169,31 +169,41 @@ export function convLayers(model: LinearModel): Conv3x3Layer[] {
 }
 
 /**
- * Packs a layer's weights for the WGSL convolution: one `mat4x4` per output group, input group and
- * tap, laid out `[og][ig][tap]`. Column `k` of a matrix holds the weights from input channel
- * `ig*4 + k` to output channels `og*4 .. og*4 + 3`, so `matrix * inputTexel` is that tap's
- * contribution to four outputs. Taps run row by row, `tap = ky*3 + kx`. Missing channels are 0.
+ * The same network in the graph format: luma in, one `conv` node per layer (3x3, replicate
+ * padding, `relu` or none), the depth-to-space, and a `luma_residual` output added to the bilinear
+ * upscale. The GPU runs linear models this way, through the graph's register-blocked convolution.
  */
-export function packConvWeights(layer: Conv3x3Layer): Float32Array<ArrayBuffer> {
-  const ig = groups(layer.in);
-  const og = groups(layer.out);
-  const packed = new Float32Array(og * ig * 9 * 16);
-  for (let o = 0; o < layer.out; o++) {
-    for (let i = 0; i < layer.in; i++) {
-      for (let t = 0; t < 9; t++) {
-        const matrix = ((o >> 2) * ig + (i >> 2)) * 9 + t;
-        packed[matrix * 16 + (i & 3) * 4 + (o & 3)] = layer.weights[(o * layer.in + i) * 9 + t];
-      }
-    }
-  }
-  return packed;
-}
-
-/** The bias as one `vec4` per output group, zero-padded. */
-export function packBias(layer: Conv3x3Layer): Float32Array<ArrayBuffer> {
-  const packed = new Float32Array(groups(layer.out) * 4);
-  packed.set(layer.bias);
-  return packed;
+export function linearToGraph(model: LinearModel): GraphModel {
+  const nodes: GraphModel['nodes'] = [];
+  let previous = GRAPH_INPUT;
+  convLayers(model).forEach((layer, index) => {
+    const name = `conv${index}`;
+    nodes.push({
+      name,
+      op: 'conv',
+      inputs: [previous],
+      in: layer.in,
+      out: layer.out,
+      kernel: 3,
+      dilation: 1,
+      padding: 'replicate',
+      activation: layer.relu ? 'relu' : 'none',
+      slope: 0.01,
+      weights: Float32Array.from(layer.weights),
+      bias: Float32Array.from(layer.bias),
+    });
+    previous = name;
+  });
+  nodes.push({ name: 'shuffle', op: 'depth_to_space', inputs: [previous], scale: model.scale });
+  return {
+    arch: model.arch,
+    scale: model.scale,
+    channels: model.channels,
+    input: 'luma',
+    output: 'luma_residual',
+    luma: model.luma,
+    nodes,
+  };
 }
 
 // ---- CPU reference ------------------------------------------------------------------------------
@@ -227,50 +237,6 @@ export function convReference(layer: Conv3x3Layer, input: Planes, width: number,
   return output;
 }
 
-/**
- * The same convolution computed the way the WGSL shader does it: from packed matrices and
- * channel groups. Used to prove the packing is right.
- */
-export function convPackedReference(
-  packed: Float32Array,
-  bias: Float32Array,
-  inputGroups: number,
-  outputGroups: number,
-  relu: boolean,
-  input: Planes,
-  width: number,
-  height: number,
-): Planes {
-  const texel = (channel: number, x: number, y: number) =>
-    channel < input.length ? input[channel][y * width + x] : 0;
-  const output: Planes = Array.from(
-    { length: outputGroups * 4 },
-    () => new Float32Array(width * height),
-  );
-  for (let og = 0; og < outputGroups; og++) {
-    for (let y = 0; y < height; y++) {
-      for (let x = 0; x < width; x++) {
-        const acc = [bias[og * 4], bias[og * 4 + 1], bias[og * 4 + 2], bias[og * 4 + 3]];
-        for (let t = 0; t < 9; t++) {
-          const qx = Math.min(width - 1, Math.max(0, x + (t % 3) - 1));
-          const qy = Math.min(height - 1, Math.max(0, y + Math.floor(t / 3) - 1));
-          for (let ig = 0; ig < inputGroups; ig++) {
-            const m = ((og * inputGroups + ig) * 9 + t) * 16;
-            for (let k = 0; k < 4; k++) {
-              const a = texel(ig * 4 + k, qx, qy);
-              for (let j = 0; j < 4; j++) acc[j] += packed[m + k * 4 + j] * a;
-            }
-          }
-        }
-        for (let j = 0; j < 4; j++) {
-          output[og * 4 + j][y * width + x] = relu ? Math.max(0, acc[j]) : acc[j];
-        }
-      }
-    }
-  }
-  return output;
-}
-
 /** `nn.PixelShuffle(scale)` for a single output channel. */
 export function depthToSpaceReference(
   input: Planes,
@@ -299,6 +265,39 @@ export function runModelReference(
   let planes: Planes = [luma];
   for (const layer of convLayers(model)) planes = convReference(layer, planes, width, height);
   return depthToSpaceReference(planes, model.scale, width, height);
+}
+
+/**
+ * The bilinear base the residual is added to: `F.interpolate(mode='bilinear',
+ * align_corners=False)`, pixel centres at half-pixel offsets, clamped to the edge. One plane in,
+ * one plane `scale` times the size out.
+ */
+export function bilinearReference(
+  plane: Float32Array,
+  width: number,
+  height: number,
+  scale: number,
+): Float32Array {
+  const outWidth = width * scale;
+  const outHeight = height * scale;
+  const out = new Float32Array(outWidth * outHeight);
+  const at = (x: number, y: number) => plane[y * width + x];
+  for (let y = 0; y < outHeight; y++) {
+    const fy = Math.min(height - 1, Math.max(0, (y + 0.5) / scale - 0.5));
+    const y0 = Math.floor(fy);
+    const y1 = Math.min(height - 1, y0 + 1);
+    const ty = fy - y0;
+    for (let x = 0; x < outWidth; x++) {
+      const fx = Math.min(width - 1, Math.max(0, (x + 0.5) / scale - 0.5));
+      const x0 = Math.floor(fx);
+      const x1 = Math.min(width - 1, x0 + 1);
+      const tx = fx - x0;
+      const top = at(x0, y0) + (at(x1, y0) - at(x0, y0)) * tx;
+      const bottom = at(x0, y1) + (at(x1, y1) - at(x0, y1)) * tx;
+      out[y * outWidth + x] = top + (bottom - top) * ty;
+    }
+  }
+  return out;
 }
 
 // ---- loading ------------------------------------------------------------------------------------

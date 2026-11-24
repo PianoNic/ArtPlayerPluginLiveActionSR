@@ -21,8 +21,6 @@ import {
 import {
   groups,
   ModelError,
-  packBias,
-  packConvWeights,
   parseLinearModel,
   parseModel,
   runModelReference,
@@ -248,18 +246,16 @@ describe('graph convolution packing', () => {
     return graph.nodes.find((n) => n.name === 'conv') as ConvNode;
   };
 
-  it('lays out a 3x3 exactly like the linear format', () => {
-    const conv = node(6, 5);
-    const linear = {
-      type: 'conv3x3' as const,
-      in: 6,
-      out: 5,
-      relu: false,
-      weights: Array.from(conv.weights),
-      bias: Array.from(conv.bias),
-    };
-    expect(Array.from(packConvKernel(conv))).toEqual(Array.from(packConvWeights(linear)));
-    expect(Array.from(packConvBias(conv))).toEqual(Array.from(packBias(linear)));
+  it('puts a single weight where the shader reads it', () => {
+    // Output channel 5 (group 1, row 1), input channel 6 (group 1, column 2), tap ky=2, kx=0.
+    const conv = node(8, 8);
+    conv.weights.fill(0);
+    conv.weights[((5 * 8 + 6) * 3 + 2) * 3 + 0] = 1;
+    const packed = packConvKernel(conv);
+    const matrix = (1 * 2 + 1) * 9 + 2 * 3 + 0;
+    expect(packed[matrix * 16 + 2 * 4 + 1]).toBe(1);
+    expect(Array.from(packed).filter((v) => v !== 0)).toHaveLength(1);
+    expect(packConvBias(node(6, 5))).toHaveLength(8);
   });
 
   const cases: [string, number, number, Record<string, unknown>, number][] = [

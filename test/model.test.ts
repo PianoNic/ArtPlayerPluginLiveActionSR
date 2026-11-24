@@ -1,14 +1,14 @@
 import { describe, expect, it } from 'vitest';
+import { graphInputReference, runGraphReference } from '../src/graph';
 import {
-  convPackedReference,
+  bilinearReference,
   convReference,
   depthToSpaceReference,
   fromHalfBits,
   groups,
   loadModel,
+  linearToGraph,
   ModelError,
-  packBias,
-  packConvWeights,
   parseLinearModel,
   parseModel,
   runModelReference,
@@ -138,65 +138,66 @@ describe('parseModel', () => {
   }
 });
 
-describe('weight packing', () => {
+describe('channel groups', () => {
   it('pads channels to groups of four', () => {
     expect(groups(1)).toBe(1);
     expect(groups(4)).toBe(1);
     expect(groups(5)).toBe(2);
     expect(groups(16)).toBe(4);
-    const layer = conv(1, 6, true);
-    expect(packConvWeights(layer)).toHaveLength(2 * 1 * 9 * 16);
-    expect(packBias(layer)).toHaveLength(8);
-    expect(Array.from(packBias(layer).slice(6))).toEqual([0, 0]);
+  });
+});
+
+describe('linearToGraph', () => {
+  it('converts every layer to a replicate-padded 3x3 conv with luma in and a residual out', () => {
+    const graph = linearToGraph(parseLinearModel(valid()));
+    expect(graph.input).toBe('luma');
+    expect(graph.output).toBe('luma_residual');
+    expect(graph.luma).toBe('bt709');
+    expect(graph.nodes.map((n) => n.op)).toEqual(['conv', 'conv', 'conv', 'depth_to_space']);
+    expect(graph.nodes[0].inputs).toEqual(['input']);
+    for (const node of graph.nodes) {
+      if (node.op !== 'conv') continue;
+      expect(node.kernel).toBe(3);
+      expect(node.dilation).toBe(1);
+      expect(node.padding).toBe('replicate');
+    }
+    expect(graph.nodes.map((n) => (n.op === 'conv' ? n.activation : '-'))).toEqual([
+      'relu',
+      'relu',
+      'none',
+      '-',
+    ]);
   });
 
-  it('puts a single weight where the shader reads it', () => {
-    // Output channel 5 (group 1, row 1), input channel 6 (group 1, column 2), tap ky=2, kx=0.
-    const layer = conv(8, 8, false, () => 0);
-    layer.weights[((5 * 8 + 6) * 3 + 2) * 3 + 0] = 1;
-    const packed = packConvWeights(layer);
-    const tap = 2 * 3 + 0;
-    const matrix = (1 * 2 + 1) * 9 + tap;
-    const index = matrix * 16 + 2 * 4 + 1;
-    expect(packed[index]).toBe(1);
-    expect(Array.from(packed).filter((v) => v !== 0)).toHaveLength(1);
-  });
-
-  // The packed layout drives the WGSL convolution; the PyTorch layout drives the reference. If
-  // both agree for odd channel counts, padding and borders included, the packing is right.
-  const shapes: [number, number, boolean][] = [
-    [1, 4, true],
-    [1, 8, true],
-    [8, 8, true],
-    [6, 5, false],
-    [16, 4, false],
-    [3, 9, true],
+  // A random tiny network on a random frame: the CPU references of both formats agree, borders
+  // (replicate padding) included.
+  const shapes: [number[], number, number, number][] = [
+    [[1, 8, 8], 2, 7, 5],
+    [[1, 5, 6], 3, 6, 4],
+    [[1, 16], 4, 5, 5],
   ];
-  for (const [inputs, outputs, relu] of shapes) {
-    it(`matches the reference convolution for ${inputs} -> ${outputs}${relu ? ' with relu' : ''}`, () => {
-      const layer = conv(inputs, outputs, relu);
-      const width = 7;
-      const height = 5;
-      const input = planes(inputs, width, height);
-      const expected = convReference(layer, input, width, height);
-      const actual = convPackedReference(
-        packConvWeights(layer),
-        packBias(layer),
-        groups(inputs),
-        groups(outputs),
-        relu,
-        input,
-        width,
-        height,
-      );
-      for (let o = 0; o < outputs; o++) {
-        for (let i = 0; i < width * height; i++) {
-          expect(actual[o][i]).toBeCloseTo(expected[o][i], 4);
-        }
-      }
-      // Padding channels stay exactly zero (bias 0, weights 0) and are never read downstream.
-      for (let o = outputs; o < groups(outputs) * 4; o++) {
-        expect(actual[o].every((v) => v === 0)).toBe(true);
+  for (const [widths, scale, width, height] of shapes) {
+    it(`gives the same residual as the linear reference: ${widths.join('-')}, x${scale}`, () => {
+      const random = rng(widths.length * 101 + scale);
+      // Hidden layers with relu, then the last one to scale^2 channels without.
+      const layers = widths.slice(1).map((out, i) => conv(widths[i], out, true, random));
+      layers.push(conv(widths[widths.length - 1], scale * scale, false, random));
+      const linear = parseLinearModel({
+        scale,
+        layers: [...layers, { type: 'depth_to_space', scale }],
+      });
+      const rgb = planes(3, width, height, 99).map((p) => p.map((v) => (v + 1) / 2)) as [
+        Float32Array,
+        Float32Array,
+        Float32Array,
+      ];
+      const graph = linearToGraph(linear);
+      const luma = graphInputReference(graph, rgb);
+      const expected = runModelReference(linear, luma[0], width, height);
+      const [actual] = runGraphReference(graph, luma, width, height);
+      expect(actual).toHaveLength(width * scale * height * scale);
+      for (let i = 0; i < expected.length; i++) {
+        expect(Math.abs(actual[i] - expected[i])).toBeLessThan(1e-4);
       }
     });
   }
@@ -242,6 +243,12 @@ describe('CPU reference', () => {
       [4, 8],
     ].map((v) => Float32Array.from(v));
     expect(Array.from(depthToSpaceReference(wide, 2, 2, 1))).toEqual([1, 2, 5, 6, 3, 4, 7, 8]);
+  });
+
+  it('upscales bilinearly with half-pixel centres, clamped to the edge', () => {
+    // align_corners=False at 2x: 0.75 * a + 0.25 * b between samples, the edge pixel repeated.
+    const out = bilinearReference(Float32Array.from([0, 4]), 2, 1, 2);
+    expect(Array.from(out.slice(0, 4))).toEqual([0, 1, 3, 4]);
   });
 
   it('runs a whole network to a residual at twice the size', () => {

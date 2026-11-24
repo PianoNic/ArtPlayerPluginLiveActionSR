@@ -48,7 +48,7 @@ export type {
 export type { Tuning } from './plan.js';
 export { DEFAULT_LABELS } from './options.js';
 export { MODES } from './modes.js';
-export { isGraphModel, ModelError, parseModel } from './model.js';
+export { isGraphModel, linearToGraph, ModelError, parseModel } from './model.js';
 
 export const PLUGIN_NAME = 'artplayerPluginLiveActionSR';
 const SETTING_NAME = 'artplayer-plugin-liveaction-sr';

@@ -11,9 +11,9 @@ import {
   graphElementwiseWgsl,
   graphInputWgsl,
   graphRgbOutputWgsl,
+  reconstructWgsl,
   type ConvShader,
 } from '../src/shaders/graph.wgsl';
-import { convWgsl, lumaWgsl, reconstructWgsl } from '../src/shaders/model.wgsl';
 import { PRESENT_WGSL } from '../src/shaders/present.wgsl';
 
 // The shaders only compile in a browser (see the demo). These checks catch what a template
@@ -33,9 +33,6 @@ const compute: [string, string][] = [
   ['deband', DEBAND_WGSL],
   ['easu', EASU_WGSL],
   ['rcas', RCAS_WGSL],
-  ['luma', lumaWgsl('bt709')],
-  ['conv', convWgsl(2, 4, true, false)],
-  ['conv f16', convWgsl(4, 1, false, true)],
   ['reconstruct', reconstructWgsl(2)],
 ];
 
@@ -114,24 +111,9 @@ describe('WGSL sources', () => {
     expect(PRESENT_WGSL).toContain('fn frag_main');
   });
 
-  it('specializes the convolution', () => {
-    const code = convWgsl(3, 2, true, false);
-    expect(code).toContain('const INPUT_GROUPS : u32 = 3u;');
-    expect(code).toContain('const OUTPUT_GROUPS : u32 = 2u;');
-    expect(code).toContain('max(acc');
-    expect(code).not.toContain('enable f16');
-    expect(convWgsl(1, 1, false, false)).not.toContain('max(acc');
-  });
-
-  it('enables f16 only on request, as the first statement', () => {
-    const code = convWgsl(1, 1, false, true);
-    expect(code.trimStart().startsWith('enable f16;')).toBe(true);
-    expect(code).toContain('array<mat4x4<f16>>');
-  });
-
   it('uses the luma coefficients the network was trained with', () => {
-    expect(lumaWgsl('bt709')).toContain('0.2126, 0.7152, 0.0722');
-    expect(lumaWgsl('bt601')).toContain('0.299, 0.587, 0.114');
+    expect(graphInputWgsl('luma', 'bt709', 'rgba16float')).toContain('0.2126, 0.7152, 0.0722');
+    expect(graphInputWgsl('luma', 'bt601', 'rgba16float')).toContain('0.299, 0.587, 0.114');
   });
 
   it("keeps AMD's copyright notice with the FSR port and in the package notices", () => {

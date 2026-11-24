@@ -7,8 +7,8 @@ export type ActivationFormat = 'rgba16float' | 'rgba32float';
 /**
  * The passes of a graph network (see `graph.ts`). Written for this project (MIT).
  *
- * Maps live in `rgba16float` (or `rgba32float`) texture arrays like the linear CNN's activations: layer `g` holds
- * channels `4g .. 4g+3`. Vectors (per-channel values, from a global pool) live in small `f32`
+ * Maps live in `rgba16float` (or `rgba32float`) texture arrays: layer `g` holds channels
+ * `4g .. 4g+3`. Vectors (per-channel values, from a global pool) live in small `f32`
  * storage buffers, zero-padded to whole groups. Activation functions are evaluated in `f32` even on
  * the `shader-f16` path: a half-precision `exp` overflows long before `tanh` saturates.
  */
@@ -379,6 +379,39 @@ fn main(@builtin(global_invocation_id) id : vec3u) {
     channel(cell, 2u * SCALE * SCALE + base),
   );
   textureStore(dst, vec2i(id.xy), vec4f(clamp(rgb, vec3f(0.0), vec3f(1.0)), 1.0));
+}
+`;
+}
+
+/**
+ * Depth-to-space plus the residual: the output of a `luma_residual` network (and of
+ * the linear format, which runs as one): each output pixel takes its channel of the last convolution
+ * (`nn.PixelShuffle` order) and adds it to a bilinear upscale of the source, on R, G and B alike,
+ * which moves luma by exactly that much and leaves the chroma alone.
+ */
+export function reconstructWgsl(scale: number): string {
+  return /* wgsl */ `
+@group(0) @binding(0) var src : texture_2d<f32>;
+@group(0) @binding(1) var linearSampler : sampler;
+@group(0) @binding(2) var residual : texture_2d_array<f32>;
+@group(0) @binding(3) var dst : texture_storage_2d<rgba16float, write>;
+
+const SCALE : u32 = ${scale}u;
+
+@compute @workgroup_size(8, 8, 1)
+fn main(@builtin(global_invocation_id) id : vec3u) {
+  let size = textureDimensions(dst);
+  if (id.x >= size.x || id.y >= size.y) {
+    return;
+  }
+  let uv = (vec2f(id.xy) + 0.5) / vec2f(size);
+  let base = textureSampleLevel(src, linearSampler, uv, 0.0).rgb;
+  let cell = vec2i(id.xy / SCALE);
+  let sub = id.xy % SCALE;
+  let channel = sub.y * SCALE + sub.x;
+  let texel = textureLoad(residual, cell, i32(channel / 4u), 0);
+  let r = texel[channel % 4u];
+  textureStore(dst, vec2i(id.xy), vec4f(clamp(base + vec3f(r), vec3f(0.0), vec3f(1.0)), 1.0));
 }
 `;
 }

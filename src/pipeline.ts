@@ -7,16 +7,7 @@ import {
   type ConvNode,
   type GraphModel,
 } from './graph.js';
-import {
-  convLayers,
-  groups,
-  isGraphModel,
-  packBias,
-  packConvWeights,
-  toHalfArray,
-  type LinearModel,
-  type ModelWeights,
-} from './model.js';
+import { groups, isGraphModel, linearToGraph, toHalfArray, type ModelWeights } from './model.js';
 import type { Preset } from './modes.js';
 import {
   debandRadius,
@@ -38,8 +29,8 @@ import {
   graphRgbOutputWgsl,
   type ActivationFormat,
   POOL_TILE,
+  reconstructWgsl,
 } from './shaders/graph.wgsl.js';
-import { convWgsl, lumaWgsl, reconstructWgsl } from './shaders/model.wgsl.js';
 
 export interface PipelineConfig {
   preset: Preset;
@@ -200,10 +191,12 @@ export class FramePipeline {
 
           case 'model': {
             if (!model) throw new Error('model stage without weights');
-            const allocators = { texture, buffer };
-            const network = isGraphModel(model)
-              ? await graphPasses(device, model, config, current, stage.size, allocators)
-              : await modelPasses(device, model, config.f16, current, stage.size, allocators);
+            // A linear model runs as the equivalent graph: same convolutions, faster kernel.
+            const graph = isGraphModel(model) ? model : linearToGraph(model);
+            const network = await graphPasses(device, graph, config, current, stage.size, {
+              texture,
+              buffer,
+            });
             passes.push(...network.passes);
             current = network.output;
             break;
@@ -257,10 +250,13 @@ export class FramePipeline {
     }
   }
 
-  /** Records every pass into one compute pass. Each dispatch sees the previous one's writes. */
-  encode(encoder: GPUCommandEncoder): void {
+  /**
+   * Records every pass into one compute pass. Each dispatch sees the previous one's writes.
+   * `timestampWrites` (needs `timestamp-query`) times that compute pass; the benchmark page uses it.
+   */
+  encode(encoder: GPUCommandEncoder, timestampWrites?: GPUComputePassTimestampWrites): void {
     if (this.passes.length === 0) return;
-    const pass = encoder.beginComputePass();
+    const pass = encoder.beginComputePass(timestampWrites ? { timestampWrites } : undefined);
     for (const { pipeline, bindGroup, workgroups } of this.passes) {
       pass.setPipeline(pipeline);
       pass.setBindGroup(0, bindGroup);
@@ -283,93 +279,6 @@ export class FramePipeline {
 interface Allocators {
   texture(size: Size, usage: number, layers?: number, format?: GPUTextureFormat): GPUTexture;
   buffer(data: ArrayBufferView<ArrayBuffer>, usage: number): GPUBuffer;
-}
-
-/** Luma in, one pass per convolution, depth-to-space plus residual out. */
-async function modelPasses(
-  device: GPUDevice,
-  model: LinearModel,
-  f16: boolean,
-  source: GPUTexture,
-  outSize: Size,
-  { texture, buffer }: Allocators,
-): Promise<{ passes: Pass[]; output: GPUTexture }> {
-  const native = { width: source.width, height: source.height };
-  const storage =
-    GPUTextureUsage.TEXTURE_BINDING | GPUTextureUsage.STORAGE_BINDING | GPUTextureUsage.COPY_SRC;
-  const passes: Pass[] = [];
-
-  const luma = texture(native, storage, 1);
-  const lumaPipeline = await computePipeline(device, lumaWgsl(model.luma));
-  passes.push({
-    label: 'luma',
-    pipeline: lumaPipeline,
-    workgroups: workgroupsFor(native),
-    bindGroup: device.createBindGroup({
-      layout: lumaPipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: source.createView() },
-        { binding: 1, resource: luma.createView(arrayView) },
-      ],
-    }),
-  });
-
-  let activations = luma;
-  for (const layer of convLayers(model)) {
-    const inputGroups = groups(layer.in);
-    const outputGroups = groups(layer.out);
-    const out = texture(native, storage, outputGroups);
-    const weights = packConvWeights(layer);
-    const bias = packBias(layer);
-    const pipeline = await computePipeline(
-      device,
-      convWgsl(inputGroups, outputGroups, layer.relu, f16),
-    );
-    passes.push({
-      label: `conv ${layer.in}->${layer.out}`,
-      pipeline,
-      workgroups: workgroupsFor(native, outputGroups),
-      bindGroup: device.createBindGroup({
-        layout: pipeline.getBindGroupLayout(0),
-        entries: [
-          { binding: 0, resource: activations.createView(arrayView) },
-          { binding: 1, resource: out.createView(arrayView) },
-          {
-            binding: 2,
-            resource: {
-              buffer: buffer(f16 ? toHalfArray(weights) : weights, GPUBufferUsage.STORAGE),
-            },
-          },
-          {
-            binding: 3,
-            resource: { buffer: buffer(f16 ? toHalfArray(bias) : bias, GPUBufferUsage.STORAGE) },
-          },
-        ],
-      }),
-    });
-    activations = out;
-  }
-
-  const out = texture(outSize, storage);
-  const pipeline = await computePipeline(device, reconstructWgsl(model.scale));
-  passes.push({
-    label: 'reconstruct',
-    pipeline,
-    workgroups: workgroupsFor(outSize),
-    bindGroup: device.createBindGroup({
-      layout: pipeline.getBindGroupLayout(0),
-      entries: [
-        { binding: 0, resource: source.createView() },
-        {
-          binding: 1,
-          resource: device.createSampler({ magFilter: 'linear', minFilter: 'linear' }),
-        },
-        { binding: 2, resource: activations.createView(arrayView) },
-        { binding: 3, resource: out.createView() },
-      ],
-    }),
-  });
-  return { passes, output: out };
 }
 
 /**

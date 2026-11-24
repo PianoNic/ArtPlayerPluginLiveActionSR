@@ -150,17 +150,10 @@ repairs colour edges and chroma blocking. The weights ship as
 
 **Cost.** 487,010 parameters and about 486,000 multiply-adds per source pixel: ten times `quality`,
 40 times `balanced`. Every frame also needs six global averages (the channel attention looks at
-the whole frame). Preliminary numbers on an RTX 5080 (Chrome, `shader-f16`), GPU time per frame
-for the CNN stage:
+the whole frame). See [Performance](#performance) for measured times: about 12 ms per frame for a
+640x360 source, 54 ms for 1280x720 and 123 ms for 1920x1080 on an RTX 5080.
 
-| Source -> output | `quality` | `ultra` |
-| ---------------- | --------- | ------- |
-| 640x360 -> 2x    | ~5 ms     | 14 ms   |
-| 960x540 -> 2x    | 9 ms      | 28 ms   |
-| 1280x720 -> 2x   | 15 ms     | 48 ms   |
-| 1920x1080 -> 2x  | 30 ms     | 110 ms  |
-
-So even a high-end desktop GPU runs it in real time only for SD to 540p sources (a 24 fps film
+So even a high-end desktop GPU runs it in real time only for SD sources (a 24 fps film
 gives 41 ms per frame), and auto's default budget (12 ms at 24 fps) leaves it out on most setups:
 it is mainly a preset to **pick by hand** for low-resolution video on an RTX 4080/5080-class or
 faster GPU. A picked `ultra` that cannot keep up keeps rendering and shows the `struggling` notice;
@@ -210,9 +203,34 @@ artplayerPluginLiveActionSR({
 });
 ```
 
-On the GPU, activations live in `rgba16float` texture arrays and each convolution is one compute
-dispatch; with `shader-f16` the arithmetic and weights are half precision. `parseModel` is exported
-to validate a file ahead of time.
+On the GPU, a linear model runs as the equivalent graph (`linearToGraph`: luma in, replicate-padded
+3x3 `conv` nodes, a `luma_residual` out), through the graph format's register-blocked convolution:
+three times faster than the per-pixel kernel it replaced. `parseModel` is exported to validate a
+file ahead of time.
+
+### Performance
+
+GPU time per frame from timestamp queries, median of 40 frames after 10 warm-up frames
+(`/demo/bench.html`). RTX 5080, Chrome 158, Windows 11, 2026-11-24, `shader-f16` (f16 weights and
+products, f32 accumulation). **CNN** is the model stage alone (luma, convolutions, depth-to-space
+plus residual, and EASU when the target is beyond 2x); **chain** is everything `FramePipeline`
+runs with the default tuning: deband > CNN (> EASU) > RCAS. Presenting to the canvas (scaling and
+grain) is not included. Timestamps are quantized to about 0.07 ms.
+
+| Source -> output       | `performance` chain | `balanced` CNN / chain | `quality` CNN / chain | `ultra` CNN / chain |
+| ---------------------- | ------------------- | ---------------------- | --------------------- | ------------------- |
+| 640x360 -> 1280x720    | 0.07 ms             | 0.39 / 0.39 ms         | 1.05 / 1.08 ms        | 12.0 / 12.3 ms      |
+| 1280x720 -> 2560x1440  | 0.13 ms             | 1.25 / 1.31 ms         | 4.06 / 4.13 ms        | 53.9 / 54.2 ms      |
+| 1920x1080 -> 3840x2160 | 0.39 ms             | 2.75 / 2.95 ms         | 9.70 / 9.90 ms        | 123.0 / 123.4 ms    |
+| 1280x720 -> 3840x2160  | 0.39 ms             | 1.44 / 1.61 ms         | 4.33 / 4.46 ms        | 54.8 / 55.1 ms      |
+
+- Before the luma networks ran through the graph convolution (one invocation per pixel and output
+  group), the CNN stage took 3.4 ms (`balanced`) and 12.5 ms (`quality`) at 1280x720, and 7.9 / 29.3
+  ms at 1920x1080: the graph kernel is 2.7-3.1x faster.
+- The f32 path (`shader-f16` off) is within 5% of these numbers, sometimes slightly faster: these
+  networks are bound by texture reads and register pressure, not by multiply throughput.
+- Accumulating in f16 as well would save another ~15% for `quality` at 1080p (with 4 output groups
+  per invocation), but the default keeps f32 accumulation for accuracy.
 
 ### Graph weights format
 
@@ -418,7 +436,9 @@ random stand-in weights into `balanced` and `quality` to run and time the CNN pa
 `?model=<url>` loads a real weights file for both, and `?ultra=<url>` sets ultra on its own.
 `/demo/model-check.html` runs a CNN preset's real GPU pipeline on a still frame, compares the
 read-back with the CPU reference (and, with `?ref=`, with a PyTorch dump from `tools/efrlfn`),
-and times presets at 720p and 1080p; its parameters are listed in `demo/model-check.ts`. `/demo/compare.html` is a side-by-side view: open a
+and times presets at 720p and 1080p; its parameters are listed in `demo/model-check.ts`
+(`?frame=synthetic` draws a test frame). `/demo/bench.html` produces the [Performance](#performance)
+table from GPU timestamp queries. `/demo/compare.html` is a side-by-side view: open a
 file from disk (or drop it on the player) and drag the split line.
 
 The CNN training pipeline lives in [`training/`](training/), the EfRLFN converter in

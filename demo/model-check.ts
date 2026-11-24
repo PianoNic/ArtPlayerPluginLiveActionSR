@@ -1,17 +1,27 @@
 import { acquireGpu, type GpuContext } from '../src/gpu';
 import { graphInputReference, isGraphModel, runGraphReference } from '../src/graph';
-import { fromHalfBits, loadModel, toHalfBits, type ModelWeights } from '../src/model';
+import {
+  bilinearReference,
+  fromHalfBits,
+  loadModel,
+  LUMA_WEIGHTS,
+  runModelReference,
+  toHalfBits,
+  type ModelWeights,
+} from '../src/model';
 import type { Preset } from '../src/modes';
 import { FramePipeline, type GraphKernelOptions } from '../src/pipeline';
 import type { ActivationFormat } from '../src/shaders/graph.wgsl';
 import { DEFAULT_TUNING } from '../src/plan';
 
 // Runs a CNN preset's real GPU pipeline on one still frame and compares the result with a CPU
-// reference: the plugin's own (`runGraphReference` / `runModelReference`) and, when present, a
+// reference: the plugin's own (`runGraphReference`, or `runModelReference` plus
+// `bilinearReference` for a linear model, which the GPU runs as a graph) and, when present, a
 // float32 dump from tools/efrlfn/convert.py --reference (PyTorch-equivalent numpy). Then times
 // presets at video sizes. Parameters:
 //   ?model=/models/ultra.json  weights to check (default ultra)
-//   ?frame=/tmp/frame.png      a small frame (the CPU reference runs the whole network in JS)
+//   ?frame=/tmp/frame.png      a small frame (the CPU reference runs the whole network in JS);
+//                              `synthetic` draws one (`&size=160x96`)
 //   ?ref=/tmp/frame.ref.f32    optional [3, 2H, 2W] float32 reference output
 //   ?f16=0                     force the f32 path
 //   ?bench=quality,ultra       presets to time (weights from /models/<preset>.json); bench=0 skips
@@ -158,6 +168,34 @@ async function time(
   return times[times.length >> 1];
 }
 
+/** A frame with edges, gradients, fine detail and saturated colour, drawn on a canvas. */
+async function syntheticFrame(size: string): Promise<ImageBitmap> {
+  const [width, height] = size.split('x').map(Number);
+  const canvas = new OffscreenCanvas(width, height);
+  const c = canvas.getContext('2d') as OffscreenCanvasRenderingContext2D;
+  const gradient = c.createLinearGradient(0, 0, width, height);
+  gradient.addColorStop(0, '#102030');
+  gradient.addColorStop(0.5, '#c08040');
+  gradient.addColorStop(1, '#f0f0e0');
+  c.fillStyle = gradient;
+  c.fillRect(0, 0, width, height);
+  for (let i = 0; i < 12; i++) {
+    c.strokeStyle = `hsl(${i * 30}, 80%, ${30 + (i % 3) * 20}%)`;
+    c.lineWidth = 1 + (i % 3);
+    c.beginPath();
+    c.arc((i * 37) % width, (i * 23) % height, 6 + i * 2, 0, Math.PI * 2);
+    c.stroke();
+  }
+  c.fillStyle = '#000';
+  c.font = `${Math.round(height / 6)}px serif`;
+  c.fillText('Aa Ww 0123', 4, height / 2);
+  for (let x = 0; x < width; x += 2) {
+    c.fillStyle = x % 4 ? '#fff' : '#000';
+    c.fillRect(x, height - 8, 1, 8);
+  }
+  return createImageBitmap(canvas);
+}
+
 async function main(): Promise<void> {
   const gpu = await acquireGpu();
   if (!gpu) {
@@ -178,9 +216,12 @@ async function main(): Promise<void> {
   print(`model ${modelUrl}: ${model.arch}, x${model.scale}`);
 
   const frameUrl = params.get('frame') ?? '/tmp/frame.png';
-  const bitmap = await createImageBitmap(await (await fetch(frameUrl)).blob(), {
-    colorSpaceConversion: 'none',
-  });
+  const bitmap =
+    frameUrl === 'synthetic'
+      ? await syntheticFrame(params.get('size') ?? '160x96')
+      : await createImageBitmap(await (await fetch(frameUrl)).blob(), {
+          colorSpaceConversion: 'none',
+        });
   const { width, height } = bitmap;
   const outW = width * model.scale;
   const outH = height * model.scale;
@@ -196,7 +237,13 @@ async function main(): Promise<void> {
   if (isGraphModel(model)) {
     cpu = runGraphReference(model, graphInputReference(model, rgb), width, height);
   } else {
-    throw new Error('the check compares RGB outputs; use a graph model');
+    // Residual on the luma, added to a bilinear upscale of R, G and B alike.
+    const [r, g, b] = LUMA_WEIGHTS[model.luma];
+    const luma = rgb[0].map((v, i) => r * v + g * rgb[1][i] + b * rgb[2][i]);
+    const residual = runModelReference(model, luma, width, height);
+    cpu = rgb.map((plane) =>
+      bilinearReference(plane, width, height, model.scale).map((v, i) => v + residual[i]),
+    );
   }
   print(`CPU reference (TypeScript) in ${((performance.now() - started) / 1000).toFixed(1)} s`);
 
@@ -226,7 +273,8 @@ async function main(): Promise<void> {
     for (const format of ['rgba16float', 'rgba32float'] as const) variants.push([f16, format]);
   }
   for (const [f16, format] of variants) {
-    const out = await runOnFrame(gpu, model, 'ultra', bitmap, f16, { format });
+    const preset: Preset = isGraphModel(model) ? 'ultra' : 'quality';
+    const out = await runOnFrame(gpu, model, preset, bitmap, f16, { format });
     const key = `${f16 ? 'f16' : 'f32'} math, ${format}`;
     const vsCpu = compare(out, cpu, outW, outH);
     results[`gpu_${key}_vs_cpu`] = vsCpu;
@@ -276,7 +324,7 @@ async function main(): Promise<void> {
       }
     }
     results.timing = timing;
-    if (params.get('kernels') === '1' && isGraphModel(model)) {
+    if (params.get('kernels') === '1') {
       const variants: Record<string, number> = {};
       // `?variants=2x8,4x4h`: output groups x pixels per invocation, h = accumulate in f16.
       const size = sizes[0];
@@ -284,7 +332,7 @@ async function main(): Promise<void> {
       for (const variant of list) {
         const [perInvocation, pixels] = variant.replace('h', '').split('x').map(Number);
         const accumulateF32 = !variant.endsWith('h');
-        const ms = await time(gpu, model, 'ultra', size, false, {
+        const ms = await time(gpu, model, isGraphModel(model) ? 'ultra' : 'quality', size, false, {
           perInvocation,
           pixels,
           accumulateF32,
