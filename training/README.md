@@ -122,13 +122,18 @@ in `export.py` and by `tests/test_export.py`:
   sampler at output pixel centres, with weights 0.75 / 0.25.
 - **Output**: clamp to [0, 1]. Combine it with bilinear-upscaled chroma.
 
-## Results so far
+## Results
 
-| Run | Data | Iterations | val PSNR-Y gain vs Lanczos |
+Gain in PSNR-Y over Lanczos on held-out clips (half clean, half through x264 / x265 / SVT-AV1).
+Both runs were trained on a local RTX 5080 (balanced 200k iterations, quality 300k). Each pair of
+models is scored on both validation sets, so the numbers compare like with like.
+
+| Models | Training data | val set A (840 pairs) | val set B (1,092 pairs, adds Netflix / UVG) |
 |---|---|---|---|
-| balanced (local RTX 5080, 1.5 min) | 482 real clips (TUM, SVT, ToS), 3 variants | 20k | **+0.39 dB** (33.54 vs 33.14) |
-| quality (local RTX 5080, 2 min) | same | 20k | **+0.45 dB** (33.59 vs 33.14); x264 +0.47, x265 +0.35, AV1 +0.51 |
-| `evaluate.py`, TUM pedestrian_area (held out), x264 CRF 27 | — | — | quality +0.39 dB PSNR-Y, **+1.5 VMAF** (74.5 vs 73.0) |
+| balanced, baseline | 3,054 clips, 34,965 pairs (Tears of Steel, TUM, SVT, Netflix El Fuente / Sparks / Nocturne) | +0.421 dB | +0.422 dB |
+| balanced, **shipped** | 6,464 clips, 75,372 pairs (adds Netflix Chimera / Meridian / more El Fuente and Nocturne, UVG-VCM) | **+0.439 dB** | **+0.443 dB** |
+| quality, baseline | as above | +0.504 dB | +0.506 dB |
+| quality, **shipped** | as above | **+0.513 dB** | **+0.522 dB** |
 
-These are pipeline checks on about 15 % of the default dataset, not release numbers. The full
-RunPod run is the real result.
+Shipped quality per codec on set B: clean +0.43, x264 +0.53, x265 +0.48, AV1 +0.58 dB. The
+whole pipeline (fetch, bake, train both, export) took 1 h 40 min locally.
