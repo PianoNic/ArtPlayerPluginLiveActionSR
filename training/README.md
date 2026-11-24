@@ -22,8 +22,8 @@ data/sources.yaml ─► data/fetch.py ─► HR crops (16-bit PNG clips)
 |---|---|
 | `lasr/models.py` | `LumaSR`: conv3x3(1→F) ReLU → [conv3x3(F→F) ReLU] x blocks → conv3x3(F→4) → depth_to_space(2) + bilinear 2x. Presets `balanced` (F=16, 5 blocks, **12,340 params**, ArtCNN C4F16 class) and `quality` (F=32, 5 blocks, **47,716 params**, C4F32 / ARSR-41k class). Optional `rep: true` trains RepConv blocks (3x3 + 1x1 + identity) that fold exactly into plain conv3x3 for export |
 | `lasr/degrade.py` | The degradation recipe (below) |
-| `lasr/ffmpeg.py` | Pipe-only ffmpeg wrappers: codec round-trip, frame decoding, probing |
-| `lasr/sources.py` | Source readers (PNG sequences, ranged y4m over HTTP, remote ffmpeg seeks, still folders with synthetic pans), crop selection and dedup |
+| `lasr/ffmpeg.py` | Pipe-only ffmpeg wrappers: codec round-trip, frame decoding, probing, HDR PQ → SDR BT.709 tone map (validated against Netflix's official SDR grade, see DATASETS.md) |
+| `lasr/sources.py` | Source readers (PNG/TIFF sequences, ranged y4m and raw planar YUV over HTTP with optional row bands, frames inside remote zips, remote ffmpeg seeks, still folders with synthetic pans), tier selection, crop selection and dedup |
 | `lasr/bake.py`, `lasr/data.py` | Multiprocess pre-baking into shards; random-patch and full-frame datasets |
 | `lasr/validate.py`, `lasr/metrics.py` | PSNR-Y / SSIM-Y vs bilinear, bicubic and Lanczos, overall and per codec |
 | `train.py` | L1 (+ optional FFT/edge), AdamW, warmup + cosine, bf16 autocast, CSV + TensorBoard, `last.pt` / `best.pt`, resume |
@@ -31,7 +31,7 @@ data/sources.yaml ─► data/fetch.py ─► HR crops (16-bit PNG clips)
 | `evaluate.py` | Model vs Lanczos (and optionally a second model or an external tool) on a video or frames, side-by-sides + metrics |
 | `configs/` | `base.yaml` (shared + degradation), `balanced.yaml`, `quality.yaml`, `smoke.yaml` |
 | `runpod/` | `setup.sh`, `run.sh`, `Dockerfile` and a README with GPU choice, time and cost |
-| `DATASETS.md` | Every source and its licence |
+| `DATASETS.md` | Every source and its licence, plus the rejected ones and why |
 
 ## The degradation recipe
 
