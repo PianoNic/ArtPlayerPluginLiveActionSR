@@ -1,6 +1,6 @@
 {
   "name": "artplayer-plugin-liveaction-sr",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Real-time upscaling of live-action video (film, TV) for ArtPlayer, on WebGPU: deband, AMD FSR 1 and film grain in hand-written WGSL, with a slot for a small trained luma CNN.",
   "keywords": [
     "artplayer",
