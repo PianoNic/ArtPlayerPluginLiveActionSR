@@ -56,7 +56,7 @@ THIS SOFTWARE.
 `models/ultra.json` holds the 2x weights of
 [EfRLFN](https://github.com/EvgeneyBogatyrev/EfRLFN) (Bogatyrev et al., "Exploring Real-Time
 Super-Resolution: Benchmarking and Fine-Tuning for Streaming Content", ICLR 2026,
-arXiv:2602.11339), converted to this package's graph format by `tools/efrlfn/convert.py` (stored
+arXiv:2602.11339), converted to this package's graph format by `tools/efrlfn/convert.py` in LiveActionSR (stored
 as float16; the network itself is unchanged). No EfRLFN source code is included: the plugin runs the
 network with its own WGSL shaders.
 

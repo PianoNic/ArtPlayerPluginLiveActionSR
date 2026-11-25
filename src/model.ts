@@ -24,7 +24,7 @@
  * ```
  *
  * `weights` is PyTorch's `Conv2d.weight` flattened row-major, shape `[out, in, 3, 3]`, and `bias`
- * is `[out]`. Convolutions pad by clamping to the edge (replicate, as trained; see training/README.md). `depth_to_space` is
+ * is `[out]`. Convolutions pad by clamping to the edge (replicate, as trained; see LiveActionSR's training/README.md). `depth_to_space` is
  * `nn.PixelShuffle(scale)`: output pixel `(x*s + dx, y*s + dy)` takes channel `dy*s + dx`. Values
  * are in 0..1 (8-bit levels divided by 255).
  */

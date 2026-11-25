@@ -144,7 +144,7 @@ an RLFN-style network with efficient channel attention and tanh, fine-tuned on c
 video. Unlike the luma presets it works on R, G and B and outputs the 2x frame itself, so it also
 repairs colour edges and chroma blocking. The weights ship as
 [`models/ultra.json`](models/ultra.json): the authors' 2x checkpoint converted unchanged
-([`tools/efrlfn`](tools/efrlfn/README.md)), stored as float16, **1.33 MB**, MIT
+([`tools/efrlfn`](https://github.com/PianoNic/LiveActionSR/tree/main/tools/efrlfn) in LiveActionSR), stored as float16, **1.33 MB**, MIT
 (Copyright (c) 2026 MSU Graphics & Media Lab; notice and citation in
 [`models/NOTICE.md`](models/NOTICE.md)).
 
@@ -183,7 +183,7 @@ upscale of the frame. Weights come as JSON:
 ```
 
 - `weights` is PyTorch's `Conv2d.weight` flattened row-major, `[out, in, 3, 3]`; `bias` is `[out]`.
-- Convolutions pad by clamping to the edge (replicate, as trained; see training/README.md); `depth_to_space` is
+- Convolutions pad by clamping to the edge (replicate, as trained; see [LiveActionSR](https://github.com/PianoNic/LiveActionSR/blob/main/training/README.md)); `depth_to_space` is
   `nn.PixelShuffle`; the base is `F.interpolate(scale_factor=2, mode='bilinear', align_corners=False)`.
 - Values are in 0..1. `luma` is `bt709` (default) or `bt601`, whichever the network was trained on.
 - Scales 2, 3 and 4 are accepted; at most 64 channels per layer and 32 layers.
@@ -435,14 +435,16 @@ The demo plays Tears of Steel (CC BY 3.0) and takes any mp4 or m3u8 URL (`?url=.
 random stand-in weights into `balanced` and `quality` to run and time the CNN path;
 `?model=<url>` loads a real weights file for both, and `?ultra=<url>` sets ultra on its own.
 `/demo/model-check.html` runs a CNN preset's real GPU pipeline on a still frame, compares the
-read-back with the CPU reference (and, with `?ref=`, with a PyTorch dump from `tools/efrlfn`),
+read-back with the CPU reference (and, with `?ref=`, with a PyTorch dump from LiveActionSR's `tools/efrlfn`),
 and times presets at 720p and 1080p; its parameters are listed in `demo/model-check.ts`
 (`?frame=synthetic` draws a test frame). `/demo/bench.html` produces the [Performance](#performance)
 table from GPU timestamp queries. `/demo/compare.html` is a side-by-side view: open a
 file from disk (or drop it on the player) and drag the split line.
 
-The CNN training pipeline lives in [`training/`](training/), the EfRLFN converter in
-[`tools/efrlfn/`](tools/efrlfn/); neither is part of the npm package.
+The CNN training pipeline, the EfRLFN converter and the paper live in the
+[LiveActionSR](https://github.com/PianoNic/LiveActionSR) repository; the weights are also on
+Hugging Face ([LiveActionSR-2x](https://huggingface.co/PianoNic/LiveActionSR-2x),
+[EfRLFN-2x-WebGPU](https://huggingface.co/PianoNic/EfRLFN-2x-WebGPU)).
 
 ## Licence
 
