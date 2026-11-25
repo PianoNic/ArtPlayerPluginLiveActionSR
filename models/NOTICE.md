@@ -1,12 +1,12 @@
 # Model weights
 
 `balanced.json` (12,340 parameters) and `quality.json` (47,716 parameters) are 2x luma
-super-resolution networks trained with the pipeline in [`training/`](../training/README.md) on
+super-resolution networks trained with the pipeline in [LiveActionSR](https://github.com/PianoNic/LiveActionSR/blob/main/training/README.md) on
 compressed (x264 / x265 / SVT-AV1) live-action footage. The weights are released under the MIT
 licence of this repository.
 
 On held-out compressed live-action clips they beat Lanczos by +0.44 dB (balanced) and +0.52 dB
-(quality) PSNR-Y; see [the training results](../training/README.md#results).
+(quality) PSNR-Y; see [the training results](https://github.com/PianoNic/LiveActionSR/blob/main/training/README.md#results).
 
 The training footage and its attribution:
 
@@ -17,12 +17,12 @@ The training footage and its attribution:
 - UVG-VCM — Ultra Video Group, Tampere University, CC BY 4.0 (T. Partanen et al., "UVG-VCM:
   Benchmarking dataset for machine-oriented visual data compression", QoMEX 2026)
 
-See [`training/DATASETS.md`](../training/DATASETS.md) for the sources and their terms.
+See [`training/DATASETS.md`](https://github.com/PianoNic/LiveActionSR/blob/main/training/DATASETS.md) for the sources and their terms.
 
 ## ultra.json (EfRLFN)
 
 `ultra.json` (487,010 parameters, float16) is the 2x checkpoint of **EfRLFN**, converted with
-[`tools/efrlfn/convert.py`](../tools/efrlfn/README.md) without retraining. It was not trained by
+[`tools/efrlfn/convert.py`](https://github.com/PianoNic/LiveActionSR/tree/main/tools/efrlfn) without retraining. It was not trained by
 this project: it comes from <https://github.com/EvgeneyBogatyrev/EfRLFN> and is used under its MIT
 licence:
 
